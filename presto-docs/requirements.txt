@@ -1,3 +1,4 @@
 sphinx==8.2.1
 sphinx-immaterial==0.13.0
 sphinx-copybutton==0.5.2
+urllib3>=2.5.0 # not directly required, pinned by Snyk to avoid a vulnerability
