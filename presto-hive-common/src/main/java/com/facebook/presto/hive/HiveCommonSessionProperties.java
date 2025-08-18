@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
@@ -20,9 +21,7 @@ import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import io.airlift.units.DataSize;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
@@ -44,7 +43,7 @@ public class HiveCommonSessionProperties
     @VisibleForTesting
     public static final String PARQUET_BATCH_READ_OPTIMIZATION_ENABLED = "parquet_batch_read_optimization_enabled";
 
-    private static final String NODE_SELECTION_STRATEGY = "node_selection_strategy";
+    public static final String NODE_SELECTION_STRATEGY = "node_selection_strategy";
     private static final String ORC_BLOOM_FILTERS_ENABLED = "orc_bloom_filters_enabled";
     private static final String ORC_LAZY_READ_SMALL_RANGES = "orc_lazy_read_small_ranges";
     private static final String ORC_MAX_BUFFER_SIZE = "orc_max_buffer_size";
@@ -61,6 +60,7 @@ public class HiveCommonSessionProperties
     private static final String PARQUET_MAX_READ_BLOCK_SIZE = "parquet_max_read_block_size";
     private static final String PARQUET_USE_COLUMN_NAMES = "parquet_use_column_names";
     public static final String READ_MASKED_VALUE_ENABLED = "read_null_masked_parquet_encrypted_value_enabled";
+    public static final String AFFINITY_SCHEDULING_FILE_SECTION_SIZE = "affinity_scheduling_file_section_size";
     private final List<PropertyMetadata<?>> sessionProperties;
 
     @Inject
@@ -177,6 +177,11 @@ public class HiveCommonSessionProperties
                         READ_MASKED_VALUE_ENABLED,
                         "Return null when access is denied for an encrypted parquet column",
                         hiveCommonClientConfig.getReadNullMaskedParquetEncryptedValue(),
+                        false),
+                dataSizeSessionProperty(
+                        AFFINITY_SCHEDULING_FILE_SECTION_SIZE,
+                        "Size of file section for affinity scheduling",
+                        hiveCommonClientConfig.getAffinitySchedulingFileSectionSize(),
                         false));
     }
 
@@ -298,5 +303,10 @@ public class HiveCommonSessionProperties
                 hidden,
                 value -> DataSize.valueOf((String) value),
                 DataSize::toString);
+    }
+
+    public static DataSize getAffinitySchedulingFileSectionSize(ConnectorSession session)
+    {
+        return session.getProperty(AFFINITY_SCHEDULING_FILE_SECTION_SIZE, DataSize.class);
     }
 }

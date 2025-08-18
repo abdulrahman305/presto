@@ -14,12 +14,14 @@
 package com.facebook.presto.dispatcher;
 
 import com.facebook.airlift.node.NodeInfo;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.cost.HistoryBasedOptimizationConfig;
 import com.facebook.presto.cost.HistoryBasedPlanStatisticsManager;
 import com.facebook.presto.event.QueryMonitor;
 import com.facebook.presto.event.QueryMonitorConfig;
+import com.facebook.presto.eventlistener.EventListenerConfig;
 import com.facebook.presto.eventlistener.EventListenerManager;
 import com.facebook.presto.execution.ClusterSizeMonitor;
 import com.facebook.presto.execution.ExecutionFailureInfo;
@@ -50,7 +52,6 @@ import com.facebook.presto.transaction.TransactionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.util.Map;
@@ -464,7 +465,7 @@ public class TestLocalDispatchQuery
 
     private EventListenerManager createEventListenerManager(CountingEventListener countingEventListener)
     {
-        EventListenerManager eventListenerManager = new EventListenerManager();
+        EventListenerManager eventListenerManager = new EventListenerManager(new EventListenerConfig());
         eventListenerManager.addEventListenerFactory(new TestEventListenerFactory(countingEventListener));
         eventListenerManager.loadConfiguredEventListener(ImmutableMap.of("event-listener.name", TestEventListenerFactory.NAME));
         return eventListenerManager;

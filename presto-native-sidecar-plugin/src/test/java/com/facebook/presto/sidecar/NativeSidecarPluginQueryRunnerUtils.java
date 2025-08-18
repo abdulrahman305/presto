@@ -12,16 +12,30 @@
  * limitations under the License.
  */
 package com.facebook.presto.sidecar;
+
+import com.facebook.presto.sidecar.functionNamespace.NativeFunctionNamespaceManagerFactory;
 import com.facebook.presto.sidecar.sessionpropertyproviders.NativeSystemSessionPropertyProviderFactory;
+import com.facebook.presto.sidecar.typemanager.NativeTypeManagerFactory;
 import com.facebook.presto.testing.QueryRunner;
+import com.google.common.collect.ImmutableMap;
 
 public class NativeSidecarPluginQueryRunnerUtils
 {
-    private NativeSidecarPluginQueryRunnerUtils() {};
+    private NativeSidecarPluginQueryRunnerUtils() {}
 
     public static void setupNativeSidecarPlugin(QueryRunner queryRunner)
     {
         queryRunner.installCoordinatorPlugin(new NativeSidecarPlugin());
-        queryRunner.loadSessionPropertyProvider(NativeSystemSessionPropertyProviderFactory.NAME);
+        queryRunner.loadSessionPropertyProvider(
+                NativeSystemSessionPropertyProviderFactory.NAME,
+                ImmutableMap.of());
+        queryRunner.loadFunctionNamespaceManager(
+                NativeFunctionNamespaceManagerFactory.NAME,
+                "native",
+                ImmutableMap.of(
+                        "supported-function-languages", "CPP",
+                        "function-implementation-type", "CPP"));
+        queryRunner.loadTypeManager(NativeTypeManagerFactory.NAME);
+        queryRunner.loadPlanCheckerProviderManager("native", ImmutableMap.of());
     }
 }

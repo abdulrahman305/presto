@@ -40,13 +40,12 @@ import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
 import org.weakref.jmx.Managed;
-
-import javax.annotation.PostConstruct;
-import javax.annotation.PreDestroy;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -66,6 +65,7 @@ import java.util.function.Predicate;
 
 import static com.facebook.airlift.concurrent.Threads.threadsNamed;
 import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
+import static com.facebook.presto.failureDetector.HeartbeatFailureDetector.convertDiscoveryDescriptor;
 import static com.facebook.presto.metadata.InternalNode.NodeStatus.ALIVE;
 import static com.facebook.presto.metadata.InternalNode.NodeStatus.DEAD;
 import static com.facebook.presto.server.ServerConfig.POOL_TYPE;
@@ -282,9 +282,9 @@ public final class DiscoveryNodeManager
     {
         // This is currently a blacklist.
         // TODO: make it a whitelist (a failure-detecting service selector) and maybe build in support for injecting this in airlift
-        Set<ServiceDescriptor> failed = failureDetector.getFailed();
+        Set<com.facebook.presto.failureDetector.ServiceDescriptor> failed = failureDetector.getFailed();
         Set<ServiceDescriptor> services = serviceSelector.selectAllServices().stream()
-                .filter(service -> !failed.contains(service))
+                .filter(service -> !failed.contains(convertDiscoveryDescriptor(service)))
                 .filter(filterRelevantNodes())
                 .collect(toImmutableSet());
 

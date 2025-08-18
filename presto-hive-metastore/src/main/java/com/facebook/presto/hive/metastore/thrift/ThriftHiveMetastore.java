@@ -56,6 +56,8 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.errorprone.annotations.ThreadSafe;
+import jakarta.inject.Inject;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.AlreadyExistsException;
@@ -92,9 +94,6 @@ import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.thrift.TException;
 import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
-
-import javax.annotation.concurrent.ThreadSafe;
-import javax.inject.Inject;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -182,6 +181,9 @@ public class ThriftHiveMetastore
     private final boolean impersonationEnabled;
     private final boolean isMetastoreAuthenticationEnabled;
     private final boolean deleteFilesOnTableDrop;
+
+    private volatile boolean metastoreKnownToSupportTableParamEqualsPredicate;
+    private volatile boolean metastoreKnownToSupportTableParamLikePredicate;
 
     @Inject
     public ThriftHiveMetastore(HiveCluster hiveCluster, MetastoreClientConfig config, HdfsEnvironment hdfsEnvironment)
@@ -309,6 +311,23 @@ public class ThriftHiveMetastore
                     .collect(toImmutableList());
 
             return result;
+        }
+        catch (TException e) {
+            throw new PrestoException(HIVE_METASTORE_ERROR, e);
+        }
+        catch (Exception e) {
+            throw propagate(e);
+        }
+    }
+
+    @Override
+    public List<String> getDatabases(MetastoreContext context, String pattern)
+    {
+        try {
+            return retry()
+                    .stopOnIllegalExceptions()
+                    .run("getDatabases", stats.getGetDatabases().wrap(() ->
+                            getMetastoreClientThenCall(context, client -> client.getDatabases(pattern))));
         }
         catch (TException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
@@ -581,7 +600,7 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public synchronized void updateTableStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update)
+    public void updateTableStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update)
     {
         PartitionStatistics currentStatistics = getTableStatistics(metastoreContext, databaseName, tableName);
         PartitionStatistics updatedStatistics = update.apply(currentStatistics);
@@ -652,7 +671,7 @@ public class ThriftHiveMetastore
     }
 
     @Override
-    public synchronized void updatePartitionStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    public void updatePartitionStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
     {
         PartitionStatistics currentStatistics = requireNonNull(
                 getPartitionStatistics(metastoreContext, databaseName, tableName, ImmutableSet.of(partitionName)).get(partitionName), "getPartitionStatistics() returned null");
@@ -896,11 +915,9 @@ public class ThriftHiveMetastore
             return retry()
                     .stopOn(UnknownDBException.class)
                     .stopOnIllegalExceptions()
-                    .run("getAllViews", stats.getGetAllViews().wrap(() ->
-                            getMetastoreClientThenCall(metastoreContext, client -> {
-                                String filter = HIVE_FILTER_FIELD_PARAMS + PRESTO_VIEW_FLAG + " = \"true\"";
-                                return Optional.of(client.getTableNamesByFilter(databaseName, filter));
-                            })));
+                    .run("getAllViews", stats.getGetAllViews().wrap(() -> {
+                        return Optional.of(getPrestoViews(databaseName));
+                    }));
         }
         catch (UnknownDBException e) {
             return Optional.empty();
@@ -1207,6 +1224,46 @@ public class ThriftHiveMetastore
             storePartitionColumnStatistics(metastoreContext, databaseName, tableName, partitionWithStatistics.getPartitionName(), partitionWithStatistics);
         }
         return EMPTY_RESULT;
+    }
+
+    private List<String> getPrestoViews(String databaseName)
+            throws TException
+    {
+        /*
+         * Thrift call `get_table_names_by_filter` may be translated by Metastore to a SQL query against Metastore database.
+         * Hive 2.3 on some databases uses CLOB for table parameter value column and some databases disallow `=` predicate over
+         * CLOB values. At the same time, they allow `LIKE` predicates over them.
+         */
+        String filterWithEquals = HIVE_FILTER_FIELD_PARAMS + PRESTO_VIEW_FLAG + " = \"true\"";
+        String filterWithLike = HIVE_FILTER_FIELD_PARAMS + PRESTO_VIEW_FLAG + " LIKE \"true\"";
+        if (metastoreKnownToSupportTableParamEqualsPredicate) {
+            try (HiveMetastoreClient client = clientProvider.createMetastoreClient(Optional.empty())) {
+                return client.getTableNamesByFilter(databaseName, filterWithEquals);
+            }
+        }
+        if (metastoreKnownToSupportTableParamLikePredicate) {
+            try (HiveMetastoreClient client = clientProvider.createMetastoreClient(Optional.empty())) {
+                return client.getTableNamesByFilter(databaseName, filterWithLike);
+            }
+        }
+        try (HiveMetastoreClient client = clientProvider.createMetastoreClient(Optional.empty())) {
+            List<String> views = client.getTableNamesByFilter(databaseName, filterWithEquals);
+            metastoreKnownToSupportTableParamEqualsPredicate = true;
+            return views;
+        }
+        catch (TException | RuntimeException firstException) {
+            try (HiveMetastoreClient client = clientProvider.createMetastoreClient(Optional.empty())) {
+                List<String> views = client.getTableNamesByFilter(databaseName, filterWithLike);
+                metastoreKnownToSupportTableParamLikePredicate = true;
+                return views;
+            }
+            catch (TException | RuntimeException secondException) {
+                if (firstException != secondException) {
+                    firstException.addSuppressed(secondException);
+                }
+            }
+            throw firstException;
+        }
     }
 
     private void addPartitionsWithoutStatistics(MetastoreContext metastoreContext, String databaseName, String tableName, List<Partition> partitions)
@@ -1605,15 +1662,16 @@ public class ThriftHiveMetastore
 
         if (tableConstraint instanceof PrimaryKeyConstraint) {
             for (String column : constraintColumns) {
-                primaryKeyConstraint.add(
-                        new SQLPrimaryKey(table.getDbName(),
-                                table.getTableName(),
-                                column,
-                                keySequence++,
-                                tableConstraint.getName().orElse(null),
-                                tableConstraint.isEnabled(),
-                                tableConstraint.isEnforced(),
-                                tableConstraint.isRely()));
+                SQLPrimaryKey sqlPrimaryKey = new SQLPrimaryKey(table.getDbName(),
+                        table.getTableName(),
+                        column,
+                        keySequence++,
+                        tableConstraint.getName().orElse(null),
+                        tableConstraint.isEnabled(),
+                        tableConstraint.isEnforced(),
+                        tableConstraint.isRely());
+                sqlPrimaryKey.setCatName(table.getCatName());
+                primaryKeyConstraint.add(sqlPrimaryKey);
             }
             callableName = "addPrimaryKeyConstraint";
             apiStats = stats.getAddPrimaryKeyConstraint();

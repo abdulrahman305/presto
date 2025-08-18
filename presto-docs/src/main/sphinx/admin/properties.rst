@@ -57,7 +57,29 @@ across nodes in the cluster. It can be disabled when it is known that the
 output data set is not skewed in order to avoid the overhead of hashing and
 redistributing all the data across the network. 
 
-The corresponding session property is :ref:`admin/properties-session:\`\`redistribute_writes\`\``. 
+The corresponding session property is :ref:`admin/properties-session:\`\`redistribute_writes\`\``.
+
+``check-access-control-on-utilized-columns-only``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``true``
+
+Apply access control rules on only those columns that are required to produce the query output.
+
+Note: Setting this property to true with the following kinds of queries:
+
+* queries that have ``USING`` in a join condition
+* queries that have duplicate named common table expressions (CTE)
+
+causes the query to be evaluated as if the property is set to false and checks the access control for all columns.
+
+To avoid these problems:
+
+* replace all ``USING`` join conditions in a query with ``ON`` join conditions
+* set unique names for all CTEs in a query
+
+The corresponding session property is :ref:`admin/properties-session:\`\`check_access_control_on_utilized_columns_only\`\``.
 
 ``eager-plan-validation-enabled``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -70,7 +92,72 @@ When enabled, the logical plan will begin to be built and validated before
 queueing and allocation of cluster resources so that any errors or
 incompatibilities in the query plan will fail quickly and inform the user.
 
+``single-node-execution-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+This property ensures that queries scheduled in this cluster use only a single
+node for execution, which may improve performance for small queries which can
+be executed within a single node.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`single_node_execution_enabled\`\``.
+
+``exclude-invalid-worker-session-properties``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+When ``exclude-invalid-worker-session-properties`` is ``true``, worker session properties that are
+incompatible with the cluster type are excluded. For example, when ``native-execution-enabled``
+is ``true``, java-worker only session properties are excluded and the native-worker only
+session properties are included.
+
 .. _tuning-memory:
+
+``per-query-retry-limit``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Minimum value:** ``0``
+* **Default value:** ``0``
+
+The number of times that a query is automatically retried in the case of a transient query or communications failure. 
+The default value ``0`` means that retries are disabled. 
+
+``http-server.max-request-header-size``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``data size``
+* **Default value:** ``8 kB``
+
+The maximum size of the request header from the HTTP server. 
+
+Note: The default value can cause errors when large session properties 
+or other large session information is involved. 
+See :ref:`troubleshoot/query:\`\`Request Header Fields Too Large\`\``.
+
+``offset-clause-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+To enable the ``OFFSET`` clause in SQL query expressions, set this property to ``true``.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`offset_clause_enabled\`\``. 
+
+``max-serializable-object-size``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``long``
+* **Default value:** ``1000``
+
+Maximum object size in bytes that can be considered serializable in a function call by the coordinator.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`max_serializable_object_size\`\``. 
 
 Memory Management Properties
 ----------------------------
@@ -365,13 +452,14 @@ Limit for memory used for unspilling a single aggregation operator instance.
 
 The corresponding session property is :ref:`admin/properties-session:\`\`aggregation_operator_unspill_memory_limit\`\``. 
 
-``experimental.spill-compression-enabled``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``experimental.spill-compression-codec``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-* **Type:** ``boolean``
-* **Default value:** ``false``
+* **Type:** ``string``
+* **Allowed value:** ``SNAPPY``, ``NONE``, ``GZIP``, ``LZ4``, ``LZO``,, ``ZLIB`` ``ZSTD``
+* **Default value:** ``NONE``
 
-Enables data compression for pages spilled to disk.
+The data compression codec to be used for pages spilled to disk.
 
 ``experimental.spill-encryption-enabled``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -888,7 +976,39 @@ The corresponding session property is :ref:`admin/properties-session:\`\`treat-l
 
 Enable retry for failed queries who can potentially be helped by HBO. 
 
-The corresponding session property is :ref:`admin/properties-session:\`\`retry-query-with-history-based-optimization\`\``. 
+The corresponding session property is :ref:`admin/properties-session:\`\`retry-query-with-history-based-optimization\`\``.
+
+``optimizer.inner-join-pushdown-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable push down inner join predicates to database. Only allows equality joins to be pushed down.
+Use :ref:`admin/properties:\`\`optimizer.inequality-join-pushdown-enabled\`\`` along with this configuration to push down inequality join predicates.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`optimizer_inner_join_pushdown_enabled\`\``.
+
+``optimizer.inequality-join-pushdown-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable push down inner join inequality predicates to database. For this configuration to be enabled, :ref:`admin/properties:\`\`optimizer.inner-join-pushdown-enabled\`\`` should be set to ``true``.
+The corresponding session property is :ref:`admin/properties-session:\`\`optimizer_inequality_join_pushdown_enabled\`\``.
+
+``optimizer.use-histograms``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default Value:** ``false``
+
+Enables the optimizer to use histograms when available to perform cost estimate calculations
+during query optimization. When set to ``false``, this parameter does not prevent histograms
+from being collected by ``ANALYZE``, but prevents them from being used during query
+optimization. This behavior can be controlled on a per-query basis using the
+``optimizer_use_histograms`` session property.
 
 Planner Properties
 ------------------
@@ -1013,3 +1133,27 @@ system will keep logs for the past 15 days.
 * **Default value:** ``100MB``
 
 The maximum file size for the log file of the HTTP server.
+
+Query Manager Properties
+------------------------
+
+``query.client.timeout``
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``5m``
+
+This property can be used to configure how long a query runs without contact
+from the client application, such as the CLI, before it's abandoned.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`query_client_timeout\`\``.
+
+``query.max-queued-time``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``100d``
+
+Use to configure how long a query can be queued before it is terminated.
+
+The corresponding session property is :ref:`admin/properties-session:\`\`query_max_queued_time\`\``.

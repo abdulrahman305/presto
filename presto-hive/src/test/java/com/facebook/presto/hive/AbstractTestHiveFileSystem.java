@@ -34,6 +34,7 @@ import com.facebook.presto.hive.metastore.thrift.BridgingHiveMetastore;
 import com.facebook.presto.hive.metastore.thrift.HiveCluster;
 import com.facebook.presto.hive.metastore.thrift.TestingHiveCluster;
 import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastore;
+import com.facebook.presto.hive.metastore.thrift.ThriftHiveMetastoreConfig;
 import com.facebook.presto.hive.statistics.QuickStatsProvider;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.spi.ColumnHandle;
@@ -150,6 +151,7 @@ public abstract class AbstractTestHiveFileSystem
     private HiveClientConfig config;
     private CacheConfig cacheConfig;
     private MetastoreClientConfig metastoreClientConfig;
+    private ThriftHiveMetastoreConfig thriftHiveMetastoreConfig;
 
     @BeforeClass
     public void setUp()
@@ -179,13 +181,14 @@ public abstract class AbstractTestHiveFileSystem
         config = new HiveClientConfig().setS3SelectPushdownEnabled(s3SelectPushdownEnabled);
         cacheConfig = new CacheConfig();
         metastoreClientConfig = new MetastoreClientConfig();
+        thriftHiveMetastoreConfig = new ThriftHiveMetastoreConfig();
 
         String proxy = System.getProperty("hive.metastore.thrift.client.socks-proxy");
         if (proxy != null) {
             metastoreClientConfig.setMetastoreSocksProxy(HostAndPort.fromString(proxy));
         }
 
-        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, host, port);
+        HiveCluster hiveCluster = new TestingHiveCluster(metastoreClientConfig, thriftHiveMetastoreConfig, host, port, new HiveCommonClientConfig());
         ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("hive-%s"));
         HivePartitionManager hivePartitionManager = new HivePartitionManager(FUNCTION_AND_TYPE_MANAGER, config);
 
@@ -222,9 +225,8 @@ public abstract class AbstractTestHiveFileSystem
                 new HivePartitionObjectBuilder(),
                 new HiveEncryptionInformationProvider(ImmutableList.of()),
                 new HivePartitionStats(),
-                new HiveFileRenamer(),
                 columnConverterProvider,
-                new QuickStatsProvider(HDFS_ENVIRONMENT, DO_NOTHING_DIRECTORY_LISTER, new HiveClientConfig(), new NamenodeStats(), ImmutableList.of()),
+                new QuickStatsProvider(metastoreClient, HDFS_ENVIRONMENT, DO_NOTHING_DIRECTORY_LISTER, new HiveClientConfig(), new NamenodeStats(), ImmutableList.of()),
                 new HiveTableWritabilityChecker(config));
 
         transactionManager = new HiveTransactionManager();
@@ -254,6 +256,7 @@ public abstract class AbstractTestHiveFileSystem
                 FUNCTION_AND_TYPE_MANAGER,
                 config,
                 metastoreClientConfig,
+                new SortingFileWriterConfig(),
                 locationService,
                 HiveTestUtils.PARTITION_UPDATE_CODEC,
                 HiveTestUtils.PARTITION_UPDATE_SMILE_CODEC,
@@ -415,7 +418,7 @@ public abstract class AbstractTestHiveFileSystem
             throws Exception
     {
         List<ColumnMetadata> columns = ImmutableList.<ColumnMetadata>builder()
-                .add(new ColumnMetadata("id", BIGINT))
+                .add(ColumnMetadata.builder().setName("id").setType(BIGINT).build())
                 .build();
 
         MaterializedResult data = MaterializedResult.resultBuilder(newSession(), BIGINT)

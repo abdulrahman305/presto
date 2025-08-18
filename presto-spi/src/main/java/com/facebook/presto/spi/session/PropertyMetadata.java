@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.spi.session;
 
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.common.type.Type;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 
 import java.util.Objects;
 import java.util.function.Function;
@@ -116,12 +116,22 @@ public final class PropertyMetadata<T>
         return decoder.apply(value);
     }
 
+    public Function<Object, T> getDecoder()
+    {
+        return decoder;
+    }
+
     /**
      * Encodes the Java type value to SQL type object value
      */
     public Object encode(T value)
     {
         return encoder.apply(value);
+    }
+
+    public Function<T, Object> getEncoder()
+    {
+        return encoder;
     }
 
     public static PropertyMetadata<Boolean> booleanProperty(String name, String description, Boolean defaultValue, boolean hidden)

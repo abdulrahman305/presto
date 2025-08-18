@@ -24,7 +24,7 @@ execute_process(
   OUTPUT_VARIABLE SCRIPT_CXX_FLAGS
   RESULT_VARIABLE COMMAND_STATUS)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 message("Appending CMAKE_CXX_FLAGS with ${SCRIPT_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${SCRIPT_CXX_FLAGS}")
@@ -56,15 +56,26 @@ option(PRESTO_ENABLE_ABFS "Build ABFS support" OFF)
 # Forwards user input to VELOX_ENABLE_PARQUET.
 option(PRESTO_ENABLE_PARQUET "Enable Parquet support" OFF)
 
+# Forwards user input to VELOX_ENABLE_CUDF.
+option(PRESTO_ENABLE_CUDF "Enable cuDF support" OFF)
+
 # Forwards user input to VELOX_ENABLE_REMOTE_FUNCTIONS.
 option(PRESTO_ENABLE_REMOTE_FUNCTIONS "Enable remote function support" OFF)
+
+option(PRESTO_ENABLE_EXAMPLES "Enable Presto examples" OFF)
 
 option(PRESTO_ENABLE_TESTING "Enable tests" ON)
 
 option(PRESTO_ENABLE_JWT "Enable JWT (JSON Web Token) authentication" OFF)
 
-# Set all Velox options below
-add_compile_definitions(FOLLY_HAVE_INT128_T=1)
+option(PRESTO_ENABLE_ARROW_FLIGHT_CONNECTOR "Enable Arrow Flight connector" OFF)
+
+option(PRESTO_ENABLE_SPATIAL "Enable spatial support" OFF)
+
+# Set all Velox options below and make sure that if we include folly headers or
+# other dependency headers that include folly headers we turn off the coroutines
+# and turn on int128.
+add_compile_definitions(FOLLY_HAVE_INT128_T=1 FOLLY_CFG_NO_COROUTINES)
 
 if(PRESTO_ENABLE_S3)
   set(VELOX_ENABLE_S3
@@ -101,6 +112,22 @@ if(PRESTO_ENABLE_REMOTE_FUNCTIONS)
       ON
       CACHE BOOL "Enable remote function support in Velox")
   add_compile_definitions(PRESTO_ENABLE_REMOTE_FUNCTIONS)
+endif()
+
+if(PRESTO_ENABLE_CUDF)
+  set(VELOX_ENABLE_CUDF
+      ON
+      CACHE BOOL "Enable cuDF support")
+  add_compile_definitions(PRESTO_ENABLE_CUDF)
+  enable_language(CUDA)
+  # Determine CUDA_ARCHITECTURES automatically.
+  cmake_policy(SET CMP0104 NEW)
+endif()
+
+if(PRESTO_ENABLE_SPATIAL)
+  set(VELOX_ENABLE_GEO
+      ON
+      CACHE BOOL "Enable Velox Geometry (aka spatial) support")
 endif()
 
 set(VELOX_BUILD_TESTING
@@ -182,6 +209,7 @@ find_library(PROXYGEN proxygen)
 find_library(PROXYGEN_HTTP_SERVER proxygenhttpserver)
 find_library(FIZZ fizz)
 find_library(WANGLE wangle)
+find_library(MVFST_EXCEPTION mvfst_exception)
 
 find_library(RE2 re2)
 
@@ -190,7 +218,8 @@ find_package(wangle CONFIG)
 find_package(FBThrift)
 include_directories(SYSTEM ${FBTHRIFT_INCLUDE_DIR})
 
-set(PROXYGEN_LIBRARIES ${PROXYGEN_HTTP_SERVER} ${PROXYGEN} ${WANGLE} ${FIZZ})
+set(PROXYGEN_LIBRARIES ${PROXYGEN_HTTP_SERVER} ${PROXYGEN} ${WANGLE} ${FIZZ}
+                       ${MVFST_EXCEPTION})
 find_path(PROXYGEN_DIR NAMES include/proxygen)
 set(PROXYGEN_INCLUDE_DIR "${PROXYGEN_DIR}/include/proxygen")
 

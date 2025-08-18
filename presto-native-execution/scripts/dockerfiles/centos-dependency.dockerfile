@@ -19,8 +19,23 @@ ENV CXX=/opt/rh/gcc-toolset-12/root/bin/g++
 RUN mkdir -p /scripts /velox/scripts
 COPY scripts /scripts
 COPY velox/scripts /velox/scripts
-RUN mkdir build && \
+# Copy extra script called during setup.
+# from https://github.com/facebookincubator/velox/pull/14016
+COPY velox/CMake/resolve_dependency_modules/arrow/cmake-compatibility.patch /velox
+ENV VELOX_ARROW_CMAKE_PATCH=/velox/cmake-compatibility.patch
+RUN bash -c "mkdir build && \
     (cd build && ../scripts/setup-centos.sh && \
-                 ../velox/scripts/setup-adapters.sh && \
-                 ../scripts/setup-adapters.sh ) && \
-    rm -rf build
+                 ../scripts/setup-adapters.sh && \
+                 source ../velox/scripts/setup-centos9.sh && \
+                 source ../velox/scripts/setup-centos-adapters.sh && \
+                 install_adapters && \
+                 install_clang15 && \
+                 install_cuda 12.8) && \
+    rm -rf build"
+
+# put CUDA binaries on the PATH
+ENV PATH=/usr/local/cuda/bin:${PATH}
+
+# configuration for nvidia-container-toolkit
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES="compute,utility"

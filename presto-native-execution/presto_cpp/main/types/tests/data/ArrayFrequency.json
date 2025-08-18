@@ -3,6 +3,7 @@
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(double,integer)",
       "paramTypes": [
         "array(double)"
@@ -12,11 +13,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(real,integer)",
       "paramTypes": [
         "array(real)"
@@ -26,11 +30,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(integer,integer)",
       "paramTypes": [
         "array(integer)"
@@ -40,11 +47,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(varchar,integer)",
       "paramTypes": [
         "array(varchar)"
@@ -54,11 +64,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(bigint,integer)",
       "paramTypes": [
         "array(bigint)"
@@ -68,11 +81,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(smallint,integer)",
       "paramTypes": [
         "array(smallint)"
@@ -82,11 +98,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(timestamp,integer)",
       "paramTypes": [
         "array(timestamp)"
@@ -96,11 +115,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(tinyint,integer)",
       "paramTypes": [
         "array(tinyint)"
@@ -110,11 +132,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(date,integer)",
       "paramTypes": [
         "array(date)"
@@ -124,11 +149,14 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "docString": "presto.default.array_frequency",
       "functionKind": "SCALAR",
+      "longVariableConstraints":[],
       "outputType": "map(boolean,integer)",
       "paramTypes": [
         "array(boolean)"
@@ -138,7 +166,9 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     }
   ]
 }

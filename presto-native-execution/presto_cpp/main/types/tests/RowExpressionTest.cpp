@@ -18,6 +18,7 @@
 #include "presto_cpp/presto_protocol/core/presto_protocol_core.h"
 #include "velox/core/Expressions.h"
 #include "velox/type/Type.h"
+#include "velox/functions/prestosql/types/JsonRegistration.h"
 
 using namespace facebook::presto;
 using namespace facebook::velox;
@@ -26,10 +27,11 @@ using namespace facebook::velox::core;
 class RowExpressionTest : public ::testing::Test {
  public:
   static void SetUpTestCase() {
-    memory::MemoryManager::testingSetInstance({});
+    memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
 
   void SetUp() override {
+    registerJsonType();
     pool_ = memory::MemoryManager::getInstance()->addLeafPool();
     converter_ =
         std::make_unique<VeloxExprConverter>(pool_.get(), &typeParser_);
@@ -497,7 +499,7 @@ TEST_F(RowExpressionTest, call) {
         ],
         "displayName": "EQUAL",
         "functionHandle": {
-          "@type": "json_file",
+          "@type": "sql_function_handle",
           "functionId": "json.x4.eq;INTEGER;INTEGER",
           "version": "1"
         },
@@ -548,7 +550,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_FALSE(returnExpr->nullOnFailure());
+    ASSERT_FALSE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // TRY_CAST(varchar_col AS varchar)
@@ -560,7 +562,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_TRUE(returnExpr->nullOnFailure());
+    ASSERT_TRUE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // CAST(varchar_col AS varchar(3))
@@ -600,7 +602,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
     std::shared_ptr<protocol::CallExpression> p =
         json::parse(makeCastToVarchar(true, "varchar", "varchar(3)"));
 
-    ASSERT_THROW(converter_->toVeloxExpr(p), VeloxRuntimeError);
+    ASSERT_THROW(converter_->toVeloxExpr(p), VeloxUserError);
   }
   // CAST(nonvarchar_col AS varchar(3))
   {
@@ -611,7 +613,7 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_FALSE(returnExpr->nullOnFailure());
+    ASSERT_FALSE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
   }
   // TRY_CAST(nonvarchar_col AS varchar(3))
@@ -623,8 +625,31 @@ TEST_F(RowExpressionTest, castToVarchar) {
 
     auto returnExpr = std::dynamic_pointer_cast<const CastTypedExpr>(expr);
     ASSERT_NE(returnExpr, nullptr);
-    ASSERT_TRUE(returnExpr->nullOnFailure());
+    ASSERT_TRUE(returnExpr->isTryCast());
     ASSERT_EQ(returnExpr->type()->toString(), "VARCHAR");
+  }
+  // CAST(json AS varchar(3))
+  {
+    std::shared_ptr<protocol::CallExpression> p =
+        json::parse(makeCastToVarchar(false, "json", "varchar(3)"));
+    auto expr = converter_->toVeloxExpr(p);
+    auto returnExpr = std::dynamic_pointer_cast<const CallTypedExpr>(expr);
+
+    ASSERT_NE(returnExpr, nullptr);
+    ASSERT_EQ(returnExpr->name(), "presto.default.substr");
+
+    auto returnArg1 = std::dynamic_pointer_cast<const CastTypedExpr>(
+        returnExpr->inputs()[0]);
+    auto returnArg2 = std::dynamic_pointer_cast<const ConstantTypedExpr>(
+        returnExpr->inputs()[1]);
+    auto returnArg3 = std::dynamic_pointer_cast<const ConstantTypedExpr>(
+        returnExpr->inputs()[2]);
+
+    ASSERT_EQ(returnArg1->type()->toString(), "VARCHAR");
+    ASSERT_EQ(returnArg2->type()->toString(), "BIGINT");
+    ASSERT_EQ(returnArg2->value().toJson(returnArg2->type()), "1");
+    ASSERT_EQ(returnArg3->type()->toString(), "BIGINT");
+    ASSERT_EQ(returnArg3->value().toJson(returnArg3->type()), "3");
   }
 }
 
@@ -910,7 +935,7 @@ TEST_F(RowExpressionTest, likeSimple) {
   ASSERT_NE(callExpr, nullptr);
 
   auto callExprToString = callExpr->toString();
-  ASSERT_EQ(callExprToString, "presto.default.like(\"type\",\"%BRASS\")");
+  ASSERT_EQ(callExprToString, "presto.default.like(\"type\",%BRASS)");
 }
 
 TEST_F(RowExpressionTest, likeWithEscape) {
@@ -974,7 +999,7 @@ TEST_F(RowExpressionTest, likeWithEscape) {
 
   auto callExprToString = callExpr->toString();
   ASSERT_EQ(
-      callExpr->toString(), "presto.default.like(\"type\",\"%BRASS\",\"#\")");
+      callExpr->toString(), "presto.default.like(\"type\",%BRASS,#)");
 }
 
 TEST_F(RowExpressionTest, dereference) {

@@ -23,7 +23,7 @@ HTTP endpoints related to tasks are registered to Proxygen in
 Other HTTP endpoints include:
 
 * POST: v1/memory: Reports memory, but no assignments are adjusted unlike in Java workers
-* GET: v1/info/metrics: Returns worker level metrics in Prometheus Data format. Refer section `Worker Metrics Collection <#worker-metrics-collection>`_ for more info. Here is a sample Metrics data returned by this API.
+* GET: v1/info/metrics: Returns worker level metrics in Prometheus Data format. See `Worker Metrics Collection`_ for more information. Here is a sample Metrics data returned by this API.
 
    .. code-block:: text
 
@@ -52,6 +52,30 @@ Other HTTP endpoints include:
 * GET: v1/status: Returns memory pool information.
 
 The request/response flow of Presto C++ is identical to Java workers. The tasks or new splits are registered via `TaskUpdateRequest`. Resource utilization and query progress are sent to the coordinator via task endpoints.
+
+* GET: /v1/operation/server/clearCache?type=memory: It clears the memory cache on worker node. Here is an example:
+
+  .. sourcecode:: http
+
+   curl -X GET "http://localhost:7777/v1/operation/server/clearCache?type=memory"
+
+   Cleared memory cache
+
+* GET: /v1/operation/server/clearCache?type=ssd: It clears the ssd cache on worker node. Here is an example:
+
+  .. sourcecode:: http
+
+   curl -X GET "http://localhost:7777/v1/operation/server/clearCache?type=ssd"
+
+   Cleared ssd cache
+
+* GET: /v1/operation/server/writeSsd: It writes data from memory cache to the ssd cache on worker node. Here is an example:
+
+  .. sourcecode:: http
+
+   curl -X GET "http://localhost:7777/v1/operation/server/writeSsd"
+
+   Succeeded write ssd cache
 
 Remote Function Execution
 -------------------------
@@ -162,6 +186,8 @@ file from Linux cgroups V1 or V2. The LinuxMemoryChecker is used for Linux syste
 
 The LinuxMemoryChecker can be enabled by setting the CMake flag ``PRESTO_MEMORY_CHECKER_TYPE=LINUX_MEMORY_CHECKER``. 
 
+.. _async_data_caching_and_prefetching:
+
 Async Data Cache and Prefetching
 --------------------------------
 
@@ -226,4 +252,7 @@ Users can enable collection of worker level metrics by setting the property:
 * **Default value:** ``false``
 
   When true, the default behavior is a no-op. There is a prior setup that must be done before enabling this flag. To enable
-  metrics collection in Prometheus Data Format refer `here <https://github.com/prestodb/presto/tree/master/presto-native-execution#build-prestissimo>`_. 
+  metrics collection in Prometheus Data Format see `Worker Metrics Collection <https://github.com/prestodb/presto/tree/master/presto-native-execution#worker-metrics-collection>`_.
+
+  When enabled and Presto C++ workers interact with the S3 filesystem, additional runtime metrics are collected.
+  For a detailed list of these metrics, see `S3 FileSystem <https://facebookincubator.github.io/velox/monitoring/metrics.html#s3-filesystem>`_.

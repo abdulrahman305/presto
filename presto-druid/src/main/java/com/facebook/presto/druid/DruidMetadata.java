@@ -38,8 +38,7 @@ import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
-
-import javax.inject.Inject;
+import jakarta.inject.Inject;
 
 import java.util.Collection;
 import java.util.List;
@@ -104,7 +103,7 @@ public class DruidMetadata
     {
         DruidTableHandle druidTable = (DruidTableHandle) tableHandle;
         List<ColumnMetadata> columns = druidClient.getColumnDataType(druidTable.getTableName()).stream()
-                .map(column -> toColumnMetadata(column))
+                .map(column -> toColumnMetadata(session, column))
                 .collect(toImmutableList());
 
         return new ConnectorTableMetadata(druidTable.toSchemaTableName(), columns);
@@ -198,9 +197,12 @@ public class DruidMetadata
         return ImmutableList.of(prefix.toSchemaTableName());
     }
 
-    private static ColumnMetadata toColumnMetadata(DruidColumnInfo column)
+    private ColumnMetadata toColumnMetadata(ConnectorSession session, DruidColumnInfo column)
     {
-        return new ColumnMetadata(column.getColumnName(), column.getDataType().getPrestoType());
+        return ColumnMetadata.builder()
+                .setName(normalizeIdentifier(session, column.getColumnName()))
+                .setType(column.getDataType().getPrestoType())
+                .build();
     }
 
     private static ColumnHandle toColumnHandle(DruidColumnInfo column)
