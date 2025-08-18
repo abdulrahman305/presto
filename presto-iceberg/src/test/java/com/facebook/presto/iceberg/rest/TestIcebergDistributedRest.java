@@ -16,6 +16,7 @@ package com.facebook.presto.iceberg.rest;
 import com.facebook.airlift.http.server.testing.TestingHttpServer;
 import com.facebook.presto.Session;
 import com.facebook.presto.iceberg.IcebergDistributedTestBase;
+import com.facebook.presto.iceberg.IcebergQueryRunner;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.testing.QueryRunner;
 import com.google.common.collect.ImmutableMap;
@@ -27,18 +28,14 @@ import org.testng.annotations.Test;
 import java.io.File;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalInt;
 
 import static com.facebook.presto.iceberg.CatalogType.REST;
-import static com.facebook.presto.iceberg.FileFormat.PARQUET;
 import static com.facebook.presto.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
-import static com.facebook.presto.iceberg.IcebergQueryRunner.createIcebergQueryRunner;
 import static com.facebook.presto.iceberg.rest.IcebergRestTestUtil.getRestServer;
 import static com.facebook.presto.iceberg.rest.IcebergRestTestUtil.restConnectorProperties;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Test
 public class TestIcebergDistributedRest
@@ -92,23 +89,12 @@ public class TestIcebergDistributedRest
                 .put("iceberg.rest.session.type", SessionType.USER.name())
                 .build();
 
-        return createIcebergQueryRunner(
-                ImmutableMap.of(),
-                connectorProperties,
-                PARQUET,
-                true,
-                false,
-                OptionalInt.empty(),
-                Optional.of(warehouseLocation.toPath()));
-    }
-
-    @Test
-    public void testDeleteOnV1Table()
-    {
-        // v1 table create fails due to Iceberg REST catalog bug (see: https://github.com/apache/iceberg/issues/8756)
-        assertThatThrownBy(super::testDeleteOnV1Table)
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageMatching("Cannot downgrade v2 table to v1");
+        return IcebergQueryRunner.builder()
+                .setExtraConnectorProperties(connectorProperties)
+                .setCatalogType(REST)
+                .setDataDirectory(Optional.of(warehouseLocation.toPath()))
+                .build()
+                .getQueryRunner();
     }
 
     @Test

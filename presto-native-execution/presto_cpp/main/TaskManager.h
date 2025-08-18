@@ -14,6 +14,7 @@
 #pragma once
 
 #include <folly/Synchronized.h>
+#include <deque>
 #include <memory>
 #include "presto_cpp/main/PrestoTask.h"
 #include "presto_cpp/main/QueryContextManager.h"
@@ -22,6 +23,9 @@
 #include "velox/exec/OutputBufferManager.h"
 
 namespace facebook::presto {
+
+// One entry can hold multiple queued tasks for the same query.
+using TaskQueue = std::deque<std::vector<std::weak_ptr<PrestoTask>>>;
 
 class TaskManager {
  public:
@@ -42,6 +46,8 @@ class TaskManager {
 
   bool emptyBaseSpillDirectory() const;
 
+  std::string getBaseSpillDirectory() const;
+
   /// Sets the time (ms) that a task is considered to be old for cleanup since
   /// its completion.
   void setOldTaskCleanUpMs(int32_t oldTaskCleanUpMs);
@@ -58,12 +64,14 @@ class TaskManager {
   std::unique_ptr<protocol::TaskInfo> createOrUpdateErrorTask(
       const protocol::TaskId& taskId,
       const std::exception_ptr& exception,
+      bool summarize,
       long startProcessCpuTime);
 
   std::unique_ptr<protocol::TaskInfo> createOrUpdateTask(
       const protocol::TaskId& taskId,
       const protocol::TaskUpdateRequest& updateRequest,
       const velox::core::PlanFragment& planFragment,
+      bool summarize,
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
       long startProcessCpuTime);
 
@@ -71,6 +79,7 @@ class TaskManager {
       const protocol::TaskId& taskId,
       const protocol::BatchTaskUpdateRequest& batchUpdateRequest,
       const velox::core::PlanFragment& planFragment,
+      bool summarize,
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
       long startProcessCpuTime);
 
@@ -84,9 +93,8 @@ class TaskManager {
       const std::unordered_map<int64_t, std::shared_ptr<ResultRequest>>&
           resultRequests);
 
-  std::unique_ptr<protocol::TaskInfo> deleteTask(
-      const protocol::TaskId& taskId,
-      bool abort);
+  std::unique_ptr<protocol::TaskInfo>
+  deleteTask(const protocol::TaskId& taskId, bool abort, bool summarize);
 
   /// Remove old Finished, Cancelled, Failed and Aborted tasks.
   /// Old is being defined by the lifetime of the task.
@@ -138,11 +146,14 @@ class TaskManager {
   int64_t getBytesProcessed() const;
 
   /// Stores the number of drivers in various states of execution.
-  velox::exec::Task::DriverCounts getDriverCounts() const;
+  velox::exec::Task::DriverCounts getDriverCounts();
 
-  // Returns array with number of tasks for each of five TaskState (enum defined
-  // in exec/Task.h).
-  std::array<size_t, 5> getTaskNumbers(size_t& numTasks) const;
+  /// Returns array with number of tasks for each of six PrestoTaskState (enum
+  /// defined in PrestoTask.h).
+  std::array<size_t, 6> getTaskNumbers(size_t& numTasks) const;
+
+  /// Returns number of tasks in the task queue.
+  size_t numQueuedTasks() const;
 
   /// Invoked to check the stuck operation calls in the system.  If the function
   /// fails to get the stuck call information from a task due to the lock
@@ -153,15 +164,36 @@ class TaskManager {
       std::vector<std::string>& deadlockTasks,
       std::vector<velox::exec::Task::OpCallInfo>& stuckOpCalls) const;
 
-  /// Build directory path for spilling for the given task.
-  /// Always returns non-empty string.
-  static std::string buildTaskSpillDirectoryPath(
+  /// Always returns tuple of non-empty string containing the spill directory
+  /// and the date string directory, which is parent directory of task spill
+  /// directory.
+  static std::tuple<std::string, std::string> buildTaskSpillDirectoryPath(
       const std::string& baseSpillPath,
       const std::string& nodeIp,
       const std::string& nodeId,
       const std::string& queryId,
       const protocol::TaskId& taskId,
       bool includeNodeInSpillPath);
+
+  /// Presto Server can notify the Task Manager that the former is overloaded,
+  /// so the Task Manager can optionally change Task admission algorithm.
+  void setServerOverloaded(bool serverOverloaded) {
+    serverOverloaded_ = serverOverloaded;
+  }
+
+  /// Returns last known number of queued drivers. Used in determining if the
+  /// server is CPU overloaded.
+  uint32_t numQueuedDrivers() const {
+    return numQueuedDrivers_;
+  }
+
+  /// Contains the logic on starting tasks if not overloaded.
+  void maybeStartTaskLocked(
+      std::shared_ptr<PrestoTask>& prestoTask,
+      bool& startNextQueuedTask);
+
+  /// See if we have any queued tasks that can be started.
+  void maybeStartNextQueuedTask();
 
  private:
   static constexpr folly::StringPiece kMaxDriversPerTask{
@@ -179,6 +211,7 @@ class TaskManager {
       const velox::core::PlanFragment& planFragment,
       const std::vector<protocol::TaskSource>& sources,
       const protocol::OutputBuffers& outputBuffers,
+      bool summarize,
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
       long startProcessCpuTime);
 
@@ -186,14 +219,20 @@ class TaskManager {
       const protocol::TaskId& taskId,
       long startProcessCpuTime = 0);
 
+  // Starting the task with task mutex already locked.
+  void startTaskLocked(std::shared_ptr<PrestoTask>& prestoTask);
+
   std::string baseUri_;
   std::string nodeId_;
   folly::Synchronized<std::string> baseSpillDir_;
   int32_t oldTaskCleanUpMs_;
   std::shared_ptr<velox::exec::OutputBufferManager> bufferManager_;
   folly::Synchronized<TaskMap> taskMap_;
+  folly::Synchronized<TaskQueue> taskQueue_;
   std::unique_ptr<QueryContextManager> queryContextManager_;
   folly::Executor* httpSrvCpuExecutor_;
+  std::atomic_bool serverOverloaded_{false};
+  std::atomic_uint32_t numQueuedDrivers_{0};
 };
 
 } // namespace facebook::presto

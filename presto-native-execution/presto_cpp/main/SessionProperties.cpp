@@ -34,6 +34,12 @@ json SessionProperty::serialize() {
   return j;
 }
 
+SessionProperties* SessionProperties::instance() {
+  static std::unique_ptr<SessionProperties> instance =
+      std::make_unique<SessionProperties>();
+  return instance.get();
+}
+
 void SessionProperties::addSessionProperty(
     const std::string& name,
     const std::string& description,
@@ -71,6 +77,15 @@ SessionProperties::SessionProperties() {
       false,
       QueryConfig::kExprMaxArraySizeInReduce,
       std::to_string(c.exprMaxArraySizeInReduce()));
+
+  addSessionProperty(
+      kExprMaxCompiledRegexes,
+      "Controls maximum number of compiled regular expression patterns per regular expression function instance "
+      "per thread of execution.",
+      BIGINT(),
+      false,
+      QueryConfig::kExprMaxCompiledRegexes,
+      std::to_string(c.exprMaxCompiledRegexes()));
 
   addSessionProperty(
       kMaxPartialAggregationMemory,
@@ -255,6 +270,17 @@ SessionProperties::SessionProperties() {
       boolToString(c.debugDisableExpressionsWithLazyInputs()));
 
   addSessionProperty(
+      kDebugMemoryPoolNameRegex,
+      "Regex for filtering on memory pool name if not empty. This allows us to "
+      "only track the callsites of memory allocations for memory pools whose "
+      "name matches the specified regular expression. Empty string means no "
+      "match for all.",
+      VARCHAR(),
+      false,
+      QueryConfig::kDebugMemoryPoolNameRegex,
+      c.debugMemoryPoolNameRegex());
+
+  addSessionProperty(
       kSelectiveNimbleReaderEnabled,
       "Temporary flag to control whether selective Nimble reader should be "
       "used in this query or not.  Will be removed after the selective Nimble "
@@ -281,13 +307,12 @@ SessionProperties::SessionProperties() {
       c.queryTraceDir());
 
   addSessionProperty(
-      kQueryTraceNodeIds,
-      "A comma-separated list of plan node ids whose input data will be traced."
-      " Empty string if only want to trace the query metadata.",
+      kQueryTraceNodeId,
+      "The plan node id whose input data will be traced.",
       VARCHAR(),
       false,
-      QueryConfig::kQueryTraceNodeIds,
-      c.queryTraceNodeIds());
+      QueryConfig::kQueryTraceNodeId,
+      c.queryTraceNodeId());
 
   addSessionProperty(
       kQueryTraceMaxBytes,
@@ -298,13 +323,14 @@ SessionProperties::SessionProperties() {
       std::to_string(c.queryTraceMaxBytes()));
 
   addSessionProperty(
-      kQueryTraceTaskRegExp,
-      "The regexp of traced task id. We only enable trace on a task if its id"
-      " matches.",
+      kOpTraceDirectoryCreateConfig,
+      "Config used to create operator trace directory. This config is provided to"
+      " underlying file system and the config is free form. The form should be defined "
+      "by the underlying file system.",
       VARCHAR(),
       false,
-      QueryConfig::kQueryTraceTaskRegExp,
-      c.queryTraceTaskRegExp());
+      QueryConfig::kOpTraceDirectoryCreateConfig,
+      c.opTraceDirectoryCreateConfig());
 
   addSessionProperty(
       kMaxOutputBufferSize,
@@ -363,34 +389,143 @@ SessionProperties::SessionProperties() {
       false,
       QueryConfig::kMaxLocalExchangePartitionCount,
       std::to_string(c.maxLocalExchangePartitionCount()));
+
+  addSessionProperty(
+      kSpillPrefixSortEnabled,
+      "Enable the prefix sort or fallback to std::sort in spill. The prefix sort is "
+      "faster than std::sort but requires the memory to build normalized prefix "
+      "keys, which might have potential risk of running out of server memory.",
+      BOOLEAN(),
+      false,
+      QueryConfig::kSpillPrefixSortEnabled,
+      std::to_string(c.spillPrefixSortEnabled()));
+
+  addSessionProperty(
+      kPrefixSortNormalizedKeyMaxBytes,
+      "Maximum number of bytes to use for the normalized key in prefix-sort. "
+      "Use 0 to disable prefix-sort.",
+      INTEGER(),
+      false,
+      QueryConfig::kPrefixSortNormalizedKeyMaxBytes,
+      std::to_string(c.prefixSortNormalizedKeyMaxBytes()));
+
+  addSessionProperty(
+      kPrefixSortMinRows,
+      "Minimum number of rows to use prefix-sort. The default value (130) has been "
+      "derived using micro-benchmarking.",
+      INTEGER(),
+      false,
+      QueryConfig::kPrefixSortMinRows,
+      std::to_string(c.prefixSortMinRows()));
+
+  addSessionProperty(
+      kScaleWriterRebalanceMaxMemoryUsageRatio,
+      "The max ratio of a query used memory to its max capacity, "
+      "and the scale writer exchange stops scaling writer processing if the query's current "
+      "memory usage exceeds this ratio. The value is in the range of (0, 1].",
+      DOUBLE(),
+      false,
+      QueryConfig::kScaleWriterRebalanceMaxMemoryUsageRatio,
+      std::to_string(c.scaleWriterRebalanceMaxMemoryUsageRatio()));
+
+  addSessionProperty(
+      kScaleWriterMaxPartitionsPerWriter,
+      "The max number of logical table partitions that can be assigned to a "
+      "single table writer thread. The logical table partition is used by local "
+      "exchange writer for writer scaling, and multiple physical table "
+      "partitions can be mapped to the same logical table partition based on the "
+      "hash value of calculated partitioned ids.",
+      INTEGER(),
+      false,
+      QueryConfig::kScaleWriterMaxPartitionsPerWriter,
+      std::to_string(c.scaleWriterMaxPartitionsPerWriter()));
+
+  addSessionProperty(
+      kScaleWriterMinPartitionProcessedBytesRebalanceThreshold,
+      "Minimum amount of data processed by a logical table partition "
+      "to trigger writer scaling if it is detected as overloaded by scale writer exchange.",
+      BIGINT(),
+      false,
+      QueryConfig::kScaleWriterMinPartitionProcessedBytesRebalanceThreshold,
+      std::to_string(
+          c.scaleWriterMinPartitionProcessedBytesRebalanceThreshold()));
+
+  addSessionProperty(
+      kScaleWriterMinProcessedBytesRebalanceThreshold,
+      "Minimum amount of data processed by all the logical table partitions "
+      "to trigger skewed partition rebalancing by scale writer exchange.",
+      BIGINT(),
+      false,
+      QueryConfig::kScaleWriterMinProcessedBytesRebalanceThreshold,
+      std::to_string(c.scaleWriterMinProcessedBytesRebalanceThreshold()));
+
+  addSessionProperty(
+      kTableScanScaledProcessingEnabled,
+      "If set to true, enables scaled processing for table scans.",
+      BOOLEAN(),
+      false,
+      QueryConfig::kTableScanScaledProcessingEnabled,
+      std::to_string(c.tableScanScaledProcessingEnabled()));
+
+  addSessionProperty(
+      kTableScanScaleUpMemoryUsageRatio,
+      "Controls the ratio of available memory that can be used for scaling up table scans. "
+      "The value is in the range of [0, 1].",
+      DOUBLE(),
+      false,
+      QueryConfig::kTableScanScaleUpMemoryUsageRatio,
+      std::to_string(c.tableScanScaleUpMemoryUsageRatio()));
+
+  addSessionProperty(
+      kStreamingAggregationMinOutputBatchRows,
+      "In streaming aggregation, wait until we have enough number of output rows"
+      "to produce a batch of size specified by this. If set to 0, then"
+      "Operator::outputBatchRows will be used as the min output batch rows.",
+      INTEGER(),
+      false,
+      QueryConfig::kStreamingAggregationMinOutputBatchRows,
+      std::to_string(c.streamingAggregationMinOutputBatchRows()));
+
+  addSessionProperty(
+      kRequestDataSizesMaxWaitSec,
+      "Maximum wait time for exchange long poll requests in seconds.",
+      INTEGER(),
+      10,
+      QueryConfig::kRequestDataSizesMaxWaitSec,
+      std::to_string(c.requestDataSizesMaxWaitSec()));
+
+  addSessionProperty(
+      kNativeQueryMemoryReclaimerPriority,
+      "Memory pool reclaimer priority.",
+      INTEGER(),
+      2147483647,
+      QueryConfig::kQueryMemoryReclaimerPriority,
+      std::to_string(c.queryMemoryReclaimerPriority()));
+
+  addSessionProperty(
+      kMaxNumSplitsListenedTo,
+      "Maximum number of splits to listen to by SplitListener on native workers.",
+      INTEGER(),
+      0,
+      QueryConfig::kMaxNumSplitsListenedTo,
+      std::to_string(c.maxNumSplitsListenedTo()));
 }
 
 const std::unordered_map<std::string, std::shared_ptr<SessionProperty>>&
-SessionProperties::getSessionProperties() {
+SessionProperties::testingSessionProperties() const {
   return sessionProperties_;
 }
 
-const std::string SessionProperties::toVeloxConfig(const std::string& name) {
+const std::string SessionProperties::toVeloxConfig(
+    const std::string& name) const {
   auto it = sessionProperties_.find(name);
   return it == sessionProperties_.end() ? name
                                         : it->second->getVeloxConfigName();
 }
 
-void SessionProperties::updateVeloxConfig(
-    const std::string& name,
-    const std::string& value) {
-  auto it = sessionProperties_.find(name);
-  // Velox config value is updated only for presto session properties.
-  if (it == sessionProperties_.end()) {
-    return;
-  }
-  it->second->updateValue(value);
-}
-
-json SessionProperties::serialize() {
+json SessionProperties::serialize() const {
   json j = json::array();
-  const auto sessionProperties = getSessionProperties();
-  for (const auto& entry : sessionProperties) {
+  for (const auto& entry : sessionProperties_) {
     j.push_back(entry.second->serialize());
   }
   return j;

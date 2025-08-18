@@ -370,9 +370,10 @@ namespace facebook::presto::protocol::hive {
 
 // NOLINTNEXTLINE: cppcoreguidelines-avoid-c-arrays
 static const std::pair<BucketFunctionType, json>
-    BucketFunctionType_enum_table[] = { // NOLINT: cert-err58-cpp
-        {BucketFunctionType::HIVE_COMPATIBLE, "HIVE_COMPATIBLE"},
-        {BucketFunctionType::PRESTO_NATIVE, "PRESTO_NATIVE"}};
+    BucketFunctionType_enum_table[] =
+        { // NOLINT: cert-err58-cpp
+            {BucketFunctionType::HIVE_COMPATIBLE, "HIVE_COMPATIBLE"},
+            {BucketFunctionType::PRESTO_NATIVE, "PRESTO_NATIVE"}};
 void to_json(json& j, const BucketFunctionType& e) {
   static_assert(
       std::is_enum<BucketFunctionType>::value,
@@ -598,12 +599,13 @@ namespace facebook::presto::protocol::hive {
 
 // NOLINTNEXTLINE: cppcoreguidelines-avoid-c-arrays
 static const std::pair<HiveCompressionCodec, json>
-    HiveCompressionCodec_enum_table[] = { // NOLINT: cert-err58-cpp
-        {HiveCompressionCodec::NONE, "NONE"},
-        {HiveCompressionCodec::SNAPPY, "SNAPPY"},
-        {HiveCompressionCodec::GZIP, "GZIP"},
-        {HiveCompressionCodec::LZ4, "LZ4"},
-        {HiveCompressionCodec::ZSTD, "ZSTD"}};
+    HiveCompressionCodec_enum_table[] =
+        { // NOLINT: cert-err58-cpp
+            {HiveCompressionCodec::NONE, "NONE"},
+            {HiveCompressionCodec::SNAPPY, "SNAPPY"},
+            {HiveCompressionCodec::GZIP, "GZIP"},
+            {HiveCompressionCodec::LZ4, "LZ4"},
+            {HiveCompressionCodec::ZSTD, "ZSTD"}};
 void to_json(json& j, const HiveCompressionCodec& e) {
   static_assert(
       std::is_enum<HiveCompressionCodec>::value,
@@ -789,6 +791,8 @@ namespace facebook::presto::protocol::hive {
 void to_json(json& j, const Table& p) {
   j = json::object();
   to_json_key(
+      j, "catalogName", p.catalogName, "Table", "String", "catalogName");
+  to_json_key(
       j, "databaseName", p.databaseName, "Table", "String", "databaseName");
   to_json_key(j, "tableName", p.tableName, "Table", "String", "tableName");
   to_json_key(j, "owner", p.owner, "Table", "String", "owner");
@@ -829,6 +833,8 @@ void to_json(json& j, const Table& p) {
 
 void from_json(const json& j, Table& p) {
   from_json_key(
+      j, "catalogName", p.catalogName, "Table", "String", "catalogName");
+  from_json_key(
       j, "databaseName", p.databaseName, "Table", "String", "databaseName");
   from_json_key(j, "tableName", p.tableName, "Table", "String", "tableName");
   from_json_key(j, "owner", p.owner, "Table", "String", "owner");
@@ -867,19 +873,6 @@ void from_json(const json& j, Table& p) {
       "viewExpandedText");
 }
 } // namespace facebook::presto::protocol::hive
-/*
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 namespace facebook::presto::protocol::hive {
 
 void to_json(json& j, const HivePageSinkMetadata& p) {
@@ -905,19 +898,6 @@ void from_json(const json& j, HivePageSinkMetadata& p) {
   from_json_key(j, "table", p.table, "HivePageSinkMetadata", "Table", "table");
 }
 } // namespace facebook::presto::protocol::hive
-/*
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 namespace facebook::presto::protocol::hive {
 
 static const std::pair<HiveStorageFormat, json> HiveStorageFormat_enum_table[] =
@@ -1251,76 +1231,6 @@ void from_json(const json& j, HiveInsertTableHandle& p) {
       "HiveInsertTableHandle",
       "EncryptionInformation",
       "encryptionInformation");
-}
-} // namespace facebook::presto::protocol::hive
-namespace facebook::presto::protocol::hive {
-HiveMetadataUpdateHandle::HiveMetadataUpdateHandle() noexcept {
-  _type = "hive";
-}
-
-void to_json(json& j, const HiveMetadataUpdateHandle& p) {
-  j = json::object();
-  j["@type"] = "hive";
-  to_json_key(
-      j,
-      "requestId",
-      p.requestId,
-      "HiveMetadataUpdateHandle",
-      "UUID",
-      "requestId");
-  to_json_key(
-      j,
-      "schemaTableName",
-      p.schemaTableName,
-      "HiveMetadataUpdateHandle",
-      "SchemaTableName",
-      "schemaTableName");
-  to_json_key(
-      j,
-      "partitionName",
-      p.partitionName,
-      "HiveMetadataUpdateHandle",
-      "String",
-      "partitionName");
-  to_json_key(
-      j,
-      "fileName",
-      p.fileName,
-      "HiveMetadataUpdateHandle",
-      "String",
-      "fileName");
-}
-
-void from_json(const json& j, HiveMetadataUpdateHandle& p) {
-  p._type = j["@type"];
-  from_json_key(
-      j,
-      "requestId",
-      p.requestId,
-      "HiveMetadataUpdateHandle",
-      "UUID",
-      "requestId");
-  from_json_key(
-      j,
-      "schemaTableName",
-      p.schemaTableName,
-      "HiveMetadataUpdateHandle",
-      "SchemaTableName",
-      "schemaTableName");
-  from_json_key(
-      j,
-      "partitionName",
-      p.partitionName,
-      "HiveMetadataUpdateHandle",
-      "String",
-      "partitionName");
-  from_json_key(
-      j,
-      "fileName",
-      p.fileName,
-      "HiveMetadataUpdateHandle",
-      "String",
-      "fileName");
 }
 } // namespace facebook::presto::protocol::hive
 namespace facebook::presto::protocol::hive {

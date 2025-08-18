@@ -97,6 +97,19 @@ If set to ``true``, disables the optimization in expression evaluation to delay 
 
 This should only be used for debugging purposes.
 
+``native_execution_type_rewrite_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+When set to ``true``:
+  - Custom type names are peeled in the coordinator. Only the actual base type is preserved.
+  - ``CAST(col AS EnumType<T>)`` is rewritten as ``CAST(col AS <T>)``.
+  - ``ENUM_KEY(EnumType<T>)`` is rewritten as ``ELEMENT_AT(MAP(<T>, VARCHAR))``.
+
+This property can only be enabled with native execution.
+
 ``native_selective_nimble_reader_enabled``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -104,7 +117,7 @@ This should only be used for debugging purposes.
 * **Default value:** ``false``
 
 Temporary flag to control whether selective Nimble reader should be used in this
-query or not.  
+query or not.
 
 ``native_join_spill_enabled``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -179,13 +192,22 @@ Native Execution only. Enable row number spilling on native engine.
 Native Execution only. Enable simplified path in expression evaluation.
 
 ``native_expression_max_array_size_in_reduce``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 * **Type:** ``integer``
 * **Default value:** ``100000``
 
-Native Execution only. The `reduce <https://prestodb.io/docs/current/functions/array.html#reduce-array-T-initialState-S-inputFunction-S-T-S-outputFunction-S-R-R>`_ 
+Native Execution only. The `reduce <https://prestodb.io/docs/current/functions/array.html#reduce-array-T-initialState-S-inputFunction-S-T-S-outputFunction-S-R-R>`_
 function will throw an error if it encounters an array of size greater than this value.
+
+``native_expression_max_compiled_regexes``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``100``
+
+Native Execution only. Controls maximum number of compiled regular expression patterns per
+regular expression function instance per thread of execution.
 
 ``native_spill_compression_codec``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -276,3 +298,192 @@ bytes / number of destinations for each destination before producing a Serialize
 
 Maximum number of partitions created by a local exchange.
 Affects concurrency for pipelines containing LocalPartitionNode.
+
+
+``native_spill_prefixsort_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable the prefix sort or fallback to std::sort in spill. The prefix sort is
+faster than std::sort but requires the memory to build normalized prefix
+keys, which might have potential risk of running out of server memory.
+
+``native_prefixsort_normalized_key_max_bytes``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``128``
+
+Maximum number of bytes to use for the normalized key in prefix-sort.
+Use ``0`` to disable prefix-sort.
+
+``native_prefixsort_min_rows``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``130``
+
+Minimum number of rows to use prefix-sort.
+The default value has been derived using micro-benchmarking.
+
+``native_op_trace_directory_create_config``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``varchar``
+* **Default value:** ``""``
+
+Native Execution only. Config used to create operator trace directory. This config is provided
+to underlying file system and the config is free form. The form should be defined by the
+underlying file system.
+
+``native_query_trace_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable query tracing. After enabled, trace data will be generated with query execution, and
+can be used by TraceReplayer. It needs to be used together with native_query_trace_node_id,
+native_query_trace_max_bytes, native_query_trace_fragment_id, and native_query_trace_shard_id
+to match the task to be traced.
+
+
+``native_query_trace_dir``
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``varchar``
+* **Default value:** ``""``
+
+The location to store the trace files.
+
+``native_query_trace_node_id``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``varchar``
+* **Default value:** ``""``
+
+The plan node id whose input data will be traced.
+
+``native_query_trace_max_bytes``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``0``
+
+The max trace bytes limit. Tracing is disabled if zero.
+
+``native_query_trace_fragment_id``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``varchar``
+* **Default value:** ``.*``
+
+The fragment id to be traced. If not specified, all fragments will be matched.
+
+``native_query_trace_shard_id``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``varchar``
+* **Default value:** ``.*``
+
+The shard id to be traced. If not specified, all shards will be matched.
+
+``native_scaled_writer_rebalance_max_memory_usage_ratio``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``double``
+* **Minimum value:** ``0``
+* **Maximum value:** ``1``
+* **Default value:** ``0.7``
+
+The max ratio of a query used memory to its max capacity, and the scale
+writer exchange stops scaling writer processing if the query's current
+memory usage exceeds this ratio. The value is in the range of (0, 1].
+
+``native_scaled_writer_max_partitions_per_writer``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``128``
+
+The max number of logical table partitions that can be assigned to a
+single table writer thread. The logical table partition is used by local
+exchange writer for writer scaling, and multiple physical table
+partitions can be mapped to the same logical table partition based on the
+hash value of calculated partitioned ids.
+
+``native_scaled_writer_min_partition_processed_bytes_rebalance_threshold``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``bigint``
+* **Default value:** ``134217728``
+
+Minimum amount of data processed by a logical table partition to trigger
+writer scaling if it is detected as overloaded by scale writer exchange.
+
+``native_scaled_writer_min_processed_bytes_rebalance_threshold``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``bigint``
+* **Default value:** ``268435456``
+
+Minimum amount of data processed by all the logical table partitions to
+trigger skewed partition rebalancing by scale writer exchange.
+
+``native_table_scan_scaled_processing_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+If set to ``true``, enables scaling the table scan concurrency on each worker.
+
+``native_table_scan_scale_up_memory_usage_ratio``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``double``
+* **Minimum value:** ``0``
+* **Maximum value:** ``1``
+* **Default value:** ``0.7``
+
+Controls the ratio of available memory that can be used for scaling up table scans.
+A higher value allows more memory to be allocated for scaling up table scans,
+while a lower value limits the amount of memory used.
+
+``native_streaming_aggregation_min_output_batch_rows``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``0``
+
+In streaming aggregation, wait until there are enough output rows
+to produce a batch of the size specified by this property. If set to ``0``, then
+``Operator::outputBatchRows`` is used as the minimum number of output batch rows.
+
+``native_request_data_sizes_max_wait_sec``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``10``
+
+Maximum wait time for exchange long poll requests in seconds.
+
+``native_query_memory_reclaimer_priority``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``2147483647``
+
+Priority of the query in the memory pool reclaimer. Lower value means higher priority.
+This is used in global arbitration victim selection.
+
+``native_max_num_splits_listened_to``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``integer``
+* **Default value:** ``0``
+
+Maximum number of splits to listen to by the SplitListener per table scan node per
+native worker.

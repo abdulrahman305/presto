@@ -17,6 +17,8 @@ import com.facebook.airlift.http.client.HttpClient;
 import com.facebook.airlift.http.client.Request;
 import com.facebook.airlift.http.client.jetty.JettyHttpClient;
 import com.facebook.airlift.json.JsonObjectMapperProvider;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.dispatcher.DispatchManager;
 import com.facebook.presto.plugin.blackhole.BlackHolePlugin;
@@ -27,21 +29,22 @@ import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.facebook.presto.spi.session.ResourceEstimates;
 import com.facebook.presto.sql.Serialization;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
+import com.facebook.presto.testing.TestingNodeManager;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
+import com.google.inject.Key;
+import jakarta.ws.rs.core.Response.Status;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import javax.ws.rs.core.Response.Status;
-
 import java.io.IOException;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -59,17 +62,19 @@ import static com.facebook.presto.execution.QueryState.RUNNING;
 import static com.facebook.presto.execution.TestQueryRunnerUtil.cancelQuery;
 import static com.facebook.presto.execution.TestQueryRunnerUtil.createQuery;
 import static com.facebook.presto.execution.TestQueryRunnerUtil.waitForQueryState;
-import static com.facebook.presto.execution.resourceGroups.db.H2TestUtil.getSimpleQueryRunner;
+import static com.facebook.presto.execution.resourceGroups.db.H2TestUtil.createQueryRunner;
+import static com.facebook.presto.execution.resourceGroups.db.H2TestUtil.getDao;
+import static com.facebook.presto.execution.resourceGroups.db.H2TestUtil.getDbConfigUrl;
 import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.spi.StandardErrorCode.ADMINISTRATIVELY_KILLED;
 import static com.facebook.presto.spi.StandardErrorCode.ADMINISTRATIVELY_PREEMPTED;
 import static com.facebook.presto.spi.StandardErrorCode.MISSING_RESOURCE_GROUP_SELECTOR;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.utils.ResourceUtils.getResourceFilePath;
+import static jakarta.ws.rs.core.Response.Status.fromStatusCode;
 import static java.lang.String.format;
 import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
-import static javax.ws.rs.core.Response.Status.fromStatusCode;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
@@ -88,7 +93,9 @@ public class TestQueues
     public void setup()
             throws Exception
     {
-        queryRunner = getSimpleQueryRunner();
+        Map<String, String> coordinatorProperties = ImmutableMap.of("plan-checker.config-dir", "src/test/resources/plan-checker-providers");
+        String dbConfigUrl = getDbConfigUrl();
+        queryRunner = createQueryRunner(dbConfigUrl, getDao(dbConfigUrl), coordinatorProperties, 1);
         queryRunner.installPlugin(new BlackHolePlugin());
         queryRunner.createCatalog("blackhole", "blackhole");
         queryRunner.execute(
@@ -383,8 +390,9 @@ public class TestQueues
         AtomicBoolean triggerValidationFailure = new AtomicBoolean();
 
         queryRunner.installPlugin(new ResourceGroupManagerPlugin());
-        queryRunner.installPlugin(new TestingPlanCheckerProviderPlugin(triggerValidationFailure));
-        queryRunner.getPlanCheckerProviderManager().loadPlanCheckerProviders();
+        queryRunner.installCoordinatorPlugin(new TestingPlanCheckerProviderPlugin(triggerValidationFailure));
+        PlanCheckerProviderManager planCheckerProviderManager = queryRunner.getCoordinator().getInstance(Key.get(PlanCheckerProviderManager.class));
+        planCheckerProviderManager.loadPlanCheckerProviders(new TestingNodeManager());
         queryRunner.getCoordinator().getResourceGroupManager().get().forceSetConfigurationManager("file", ImmutableMap.of("resource-groups.config-file", getResourceFilePath("resource_groups_config_eager_plan_validation.json")));
 
         Session.SessionBuilder builder = testSessionBuilder()

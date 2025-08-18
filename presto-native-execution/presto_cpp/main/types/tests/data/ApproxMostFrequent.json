@@ -7,6 +7,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(boolean,bigint)",
       "paramTypes": [
         "bigint",
@@ -18,7 +19,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
@@ -27,6 +30,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(tinyint,bigint)",
       "paramTypes": [
         "bigint",
@@ -38,7 +42,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
@@ -47,6 +53,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(smallint,bigint)",
       "paramTypes": [
         "bigint",
@@ -58,7 +65,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
@@ -67,6 +76,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(integer,bigint)",
       "paramTypes": [
         "bigint",
@@ -78,7 +88,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
@@ -87,6 +99,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(bigint,bigint)",
       "paramTypes": [
         "bigint",
@@ -98,7 +111,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
@@ -107,6 +122,7 @@
       },
       "docString": "presto.default.approx_most_frequent",
       "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
       "outputType": "map(varchar,bigint)",
       "paramTypes": [
         "bigint",
@@ -118,19 +134,22 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     },
     {
       "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(boolean),array(bigint))",
+        "intermediateType": "row(bigint,bigint,array(json),array(bigint))",
         "isOrderSensitive": true
       },
       "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(boolean,bigint)",
+      "functionKind": "AGGREGATE",
+      "longVariableConstraints":[],
+      "outputType": "map(json,bigint)",
       "paramTypes": [
         "bigint",
-        "boolean",
+        "json",
         "bigint"
       ],
       "routineCharacteristics": {
@@ -138,107 +157,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
-    },
-    {
-      "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(tinyint),array(bigint))",
-        "isOrderSensitive": true
-      },
-      "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(tinyint,bigint)",
-      "paramTypes": [
-        "bigint",
-        "tinyint",
-        "bigint"
-      ],
-      "routineCharacteristics": {
-        "determinism": "DETERMINISTIC",
-        "language": "CPP",
-        "nullCallClause": "CALLED_ON_NULL_INPUT"
-      },
-      "schema": "default"
-    },
-    {
-      "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(smallint),array(bigint))",
-        "isOrderSensitive": true
-      },
-      "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(smallint,bigint)",
-      "paramTypes": [
-        "bigint",
-        "smallint",
-        "bigint"
-      ],
-      "routineCharacteristics": {
-        "determinism": "DETERMINISTIC",
-        "language": "CPP",
-        "nullCallClause": "CALLED_ON_NULL_INPUT"
-      },
-      "schema": "default"
-    },
-    {
-      "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(integer),array(bigint))",
-        "isOrderSensitive": true
-      },
-      "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(integer,bigint)",
-      "paramTypes": [
-        "bigint",
-        "integer",
-        "bigint"
-      ],
-      "routineCharacteristics": {
-        "determinism": "DETERMINISTIC",
-        "language": "CPP",
-        "nullCallClause": "CALLED_ON_NULL_INPUT"
-      },
-      "schema": "default"
-    },
-    {
-      "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(bigint),array(bigint))",
-        "isOrderSensitive": true
-      },
-      "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(bigint,bigint)",
-      "paramTypes": [
-        "bigint",
-        "bigint",
-        "bigint"
-      ],
-      "routineCharacteristics": {
-        "determinism": "DETERMINISTIC",
-        "language": "CPP",
-        "nullCallClause": "CALLED_ON_NULL_INPUT"
-      },
-      "schema": "default"
-    },
-    {
-      "aggregateMetadata": {
-        "intermediateType": "row(bigint,bigint,array(varchar),array(bigint))",
-        "isOrderSensitive": true
-      },
-      "docString": "presto.default.approx_most_frequent",
-      "functionKind": "WINDOW",
-      "outputType": "map(varchar,bigint)",
-      "paramTypes": [
-        "bigint",
-        "varchar",
-        "bigint"
-      ],
-      "routineCharacteristics": {
-        "determinism": "DETERMINISTIC",
-        "language": "CPP",
-        "nullCallClause": "CALLED_ON_NULL_INPUT"
-      },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints": [],
+      "variableArity": false
     }
   ]
 }

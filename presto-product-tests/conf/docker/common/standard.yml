@@ -39,6 +39,7 @@ services:
     volumes:
        - ${PRESTO_SERVER_DIR}:/docker/volumes/presto-server
        - ../../../src/main/resources/avro:/docker/volumes/presto-product-tests/avro
+       - ${OVERRIDE_JDK_DIR}:/docker/volumes/overridejdk
 
   application-runner:
     extends:
@@ -52,6 +53,7 @@ services:
       - ../../../conf/tempto/tempto-configuration-for-docker-default.yaml:/docker/volumes/tempto/tempto-configuration-local.yaml
       - ../../../target/test-reports:/docker/volumes/test-reports
       - /tmp/presto_history_docker:/root/.presto_history
+      - ${OVERRIDE_JDK_DIR}:/docker/volumes/overridejdk
     environment:
       - PRESTO_JDBC_DRIVER_CLASS
       - TEMPTO_EXTRA_CONFIG_FILE

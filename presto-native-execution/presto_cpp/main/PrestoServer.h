@@ -67,6 +67,7 @@ class Announcer;
 class SignalHandler;
 class TaskManager;
 class TaskResource;
+class PeriodicMemoryChecker;
 class PeriodicTaskManager;
 class SystemConfig;
 
@@ -115,27 +116,26 @@ class PrestoServer {
   void enableAnnouncer(bool enable);
 
  protected:
+  virtual void createPeriodicMemoryChecker();
+
   /// Hook for derived PrestoServer implementations to add/stop additional
   /// periodic tasks.
   virtual void addAdditionalPeriodicTasks(){};
 
   virtual void stopAdditionalPeriodicTasks(){};
 
-  virtual void addMemoryCheckerPeriodicTask();
-
-  virtual void stopMemoryCheckerPeriodicTask();
-
   virtual void initializeCoordinatorDiscoverer();
+
+  virtual void initializeThreadPools();
 
   virtual std::shared_ptr<velox::exec::TaskListener> getTaskListener();
 
   virtual std::shared_ptr<velox::exec::ExprSetListener> getExprSetListener();
 
-  /// Returns any additional http filters.
-  virtual std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>>
-  getAdditionalHttpServerFilters();
+  virtual std::shared_ptr<facebook::velox::exec::SplitListenerFactory>
+    getSplitListenerFactory();
 
-  virtual std::vector<std::string> registerConnectors(
+  virtual std::vector<std::string> registerVeloxConnectors(
       const fs::path& configDirectoryPath);
 
   /// Invoked to register the required dwio data sinks which are used by
@@ -145,8 +145,6 @@ class PrestoServer {
   virtual void registerFileReadersAndWriters();
 
   virtual void unregisterFileReadersAndWriters();
-
-  virtual void registerConnectorFactories();
 
   /// Invoked by presto shutdown procedure to unregister connectors.
   virtual void unregisterConnectors();
@@ -190,17 +188,16 @@ class PrestoServer {
 
   VeloxPlanValidator* getVeloxPlanValidator();
 
+  void registerDynamicFunctions();
+
   /// Invoked to get the list of filters passed to the http server.
-  std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>>
-  getHttpServerFilters();
+  virtual std::vector<std::unique_ptr<proxygen::RequestHandlerFactory>>
+  getHttpServerFilters() const;
 
   void initializeVeloxMemory();
 
-  void initializeThreadPools();
-
   void registerStatsCounters();
 
- protected:
   void updateAnnouncerDetails();
 
   void addServerPeriodicTasks();
@@ -210,6 +207,10 @@ class PrestoServer {
   void reportServerInfo(proxygen::ResponseHandler* downstream);
 
   void reportNodeStatus(proxygen::ResponseHandler* downstream);
+
+  void handleGracefulShutdown(
+      const std::vector<std::unique_ptr<folly::IOBuf>>& body,
+      proxygen::ResponseHandler* downstream);
 
   protocol::NodeStatus fetchNodeStatus();
 
@@ -224,35 +225,47 @@ class PrestoServer {
 
   std::unique_ptr<velox::cache::SsdCache> setupSsdCache();
 
+  void checkOverload();
+
   const std::string configDirectoryPath_;
 
   std::shared_ptr<CoordinatorDiscoverer> coordinatorDiscoverer_;
 
   // Executor for background writing into SSD cache.
-  std::unique_ptr<folly::IOThreadPoolExecutor> cacheExecutor_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> cacheExecutor_;
+
+  // Executor for async execution for connectors.
+  std::unique_ptr<folly::CPUThreadPoolExecutor> connectorCpuExecutor_;
 
   // Executor for async IO for connectors.
   std::unique_ptr<folly::IOThreadPoolExecutor> connectorIoExecutor_;
 
   // Executor for exchange data over http.
-  std::shared_ptr<folly::IOThreadPoolExecutor> exchangeHttpIoExecutor_;
+  std::unique_ptr<folly::IOThreadPoolExecutor> exchangeHttpIoExecutor_;
 
   // Executor for exchange request processing.
-  std::shared_ptr<folly::CPUThreadPoolExecutor> exchangeHttpCpuExecutor_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> exchangeHttpCpuExecutor_;
 
   // Executor for HTTP request dispatching
   std::shared_ptr<folly::IOThreadPoolExecutor> httpSrvIoExecutor_;
 
   // Executor for HTTP request processing after dispatching
-  std::shared_ptr<folly::CPUThreadPoolExecutor> httpSrvCpuExecutor_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> httpSrvCpuExecutor_;
 
-  // Executor for query engine driver executions.
-  std::shared_ptr<folly::CPUThreadPoolExecutor> driverExecutor_;
+  // Executor for query engine driver executions. The underlying thread pool 
+  // executor is a folly::CPUThreadPoolExecutor. The executor is stored as 
+  // abstract type to provide flexibility of thread pool monitoring. The 
+  // underlying folly::CPUThreadPoolExecutor can be obtained through 
+  // 'driverCpuExecutor()' method.
+  std::unique_ptr<folly::Executor> driverExecutor_;
+  // Raw pointer pointing to the underlying folly::CPUThreadPoolExecutor of 
+  // 'driverExecutor_'.
+  folly::CPUThreadPoolExecutor* driverCpuExecutor_;
 
   // Executor for spilling.
-  std::shared_ptr<folly::CPUThreadPoolExecutor> spillerExecutor_;
+  std::unique_ptr<folly::CPUThreadPoolExecutor> spillerExecutor_;
 
-  std::shared_ptr<VeloxPlanValidator> planValidator_;
+  std::unique_ptr<VeloxPlanValidator> planValidator_;
 
   std::unique_ptr<http::HttpClientConnectionPool> exchangeSourceConnectionPool_;
 
@@ -264,6 +277,7 @@ class PrestoServer {
   std::unique_ptr<Announcer> announcer_;
   std::unique_ptr<PeriodicHeartbeatManager> heartbeatManager_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
+  std::shared_ptr<velox::memory::MemoryPool> nativeWorkerPool_;
   std::unique_ptr<TaskManager> taskManager_;
   std::unique_ptr<TaskResource> taskResource_;
   std::atomic<NodeState> nodeState_{NodeState::kActive};
@@ -271,6 +285,17 @@ class PrestoServer {
   std::chrono::steady_clock::time_point start_;
   std::unique_ptr<PeriodicTaskManager> periodicTaskManager_;
   std::unique_ptr<PrestoServerOperations> prestoServerOperations_;
+  std::unique_ptr<PeriodicMemoryChecker> memoryChecker_;
+
+  // Last known memory overloaded status.
+  bool memOverloaded_{false};
+  // Last known CPU overloaded status.
+  bool cpuOverloaded_{false};
+  // Current worker overloaded status. It can still be true when memory and CPU
+  // overloaded flags are not due to cooldown period.
+  bool serverOverloaded_{false};
+  // Last time point (in seconds) when the worker was overloaded.
+  uint64_t lastOverloadedTimeInSecs_{0};
 
   // We update these members asynchronously and return in http requests w/o
   // delay.
@@ -282,7 +307,9 @@ class PrestoServer {
   std::string nodeId_;
   std::string address_;
   std::string nodeLocation_;
+  std::string nodePoolType_;
   folly::SSLContextPtr sslContext_;
+  std::string prestoBuiltinFunctionPrefix_;
 };
 
 } // namespace facebook::presto

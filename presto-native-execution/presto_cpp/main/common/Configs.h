@@ -42,12 +42,13 @@ class ConfigBase {
     config_ = std::move(config);
   }
 
-  /// Registers an extra property in the config.
+  /// DO NOT DELETE THIS METHOD!
+  /// The method is used to register new properties after the config class is created.
   /// Returns true if succeeded, false if failed (due to the property already
   /// registered).
   bool registerProperty(
-      const std::string& propertyName,
-      const folly::Optional<std::string>& defaultValue = {});
+    const std::string& propertyName,
+    const folly::Optional<std::string>& defaultValue = {});
 
   /// Adds or replaces value at the given key. Can be used by debugging or
   /// testing code.
@@ -94,7 +95,7 @@ class ConfigBase {
   template <typename T>
   folly::Optional<T> optionalProperty(const std::string& propertyName) const {
     auto valOpt = config_->get<T>(propertyName);
-    if (valOpt.hasValue()) {
+    if (valOpt.has_value()) {
       return valOpt.value();
     }
     const auto it = registeredProps_.find(propertyName);
@@ -114,8 +115,8 @@ class ConfigBase {
   folly::Optional<std::string> optionalProperty(
       const std::string& propertyName) const {
     auto val = config_->get<std::string>(propertyName);
-    if (val.hasValue()) {
-      return val;
+    if (val.has_value()) {
+      return val.value();
     }
     const auto it = registeredProps_.find(propertyName);
     if (it != registeredProps_.end()) {
@@ -129,10 +130,6 @@ class ConfigBase {
       std::string_view propertyName) const {
     return optionalProperty(std::string{propertyName});
   }
-
-  /// Returns "N<capacity_unit>" as string containing capacity in bytes.
-  std::string capacityPropertyAsBytesString(
-      std::string_view propertyName) const;
 
   /// Returns copy of the config values map.
   std::unordered_map<std::string, std::string> values() const {
@@ -201,6 +198,8 @@ class SystemConfig : public ConfigBase {
       "http-server.https.port"};
   static constexpr std::string_view kHttpServerHttpsEnabled{
       "http-server.https.enabled"};
+  static constexpr std::string_view kHttpServerHttp2Enabled{
+      "http-server.http2.enabled"};
   /// List of comma separated ciphers the client can use.
   ///
   /// NOTE: the client needs to have at least one cipher shared with server
@@ -214,12 +213,25 @@ class SystemConfig : public ConfigBase {
       "https-client-cert-key-path"};
 
   /// Floating point number used in calculating how many threads we would use
+  /// for CPU executor for connectors mainly for async operators:
+  /// hw_concurrency x multiplier.
+  /// If 0.0 then connector CPU executor would not be created.
+  /// 0.0 is default.
+  static constexpr std::string_view kConnectorNumCpuThreadsHwMultiplier{
+      "connector.num-cpu-threads-hw-multiplier"};
+
+  /// Floating point number used in calculating how many threads we would use
   /// for IO executor for connectors mainly to do preload/prefetch:
   /// hw_concurrency x multiplier.
   /// If 0.0 then connector preload/prefetch is disabled.
   /// 0.0 is default.
   static constexpr std::string_view kConnectorNumIoThreadsHwMultiplier{
       "connector.num-io-threads-hw-multiplier"};
+
+  /// Maximum number of splits to preload per driver.
+  /// Set to 0 to disable preloading.
+  static constexpr std::string_view kDriverMaxSplitPreload{
+      "driver.max-split-preload"};
 
   /// Floating point number used in calculating how many threads we would use
   /// for Driver CPU executor: hw_concurrency x multiplier. 4.0 is default.
@@ -263,6 +275,12 @@ class SystemConfig : public ConfigBase {
   static constexpr std::string_view kSpillerFileCreateConfig{
       "spiller.file-create-config"};
 
+  /// Config used to create spill directories. This config is provided to
+  /// underlying file system and the config is free form. The form should be
+  /// defined by the underlying file system.
+  static constexpr std::string_view kSpillerDirectoryCreateConfig{
+      "spiller.directory-create-config"};
+
   static constexpr std::string_view kSpillerSpillPath{
       "experimental.spiller-spill-path"};
   static constexpr std::string_view kShutdownOnsetSec{"shutdown-onset-sec"};
@@ -284,11 +302,35 @@ class SystemConfig : public ConfigBase {
   /// get the server out of low memory condition. This only applies if
   /// 'system-mem-pushback-enabled' is true.
   static constexpr std::string_view kSystemMemShrinkGb{"system-mem-shrink-gb"};
-  /// If true, memory pushback will quickly abort queries with the most memory
+  /// If true, memory pushback will abort queries with the largest memory
   /// usage under low memory condition. This only applies if
   /// 'system-mem-pushback-enabled' is set.
   static constexpr std::string_view kSystemMemPushbackAbortEnabled{
       "system-mem-pushback-abort-enabled"};
+
+  /// Memory threshold in GB above which the worker is considered overloaded.
+  /// Ignored if zero. Default is zero.
+  static constexpr std::string_view kWorkerOverloadedThresholdMemGb{
+      "worker-overloaded-threshold-mem-gb"};
+  /// CPU threshold in % above which the worker is considered overloaded.
+  /// Ignored if zero. Default is zero.
+  static constexpr std::string_view kWorkerOverloadedThresholdCpuPct{
+      "worker-overloaded-threshold-cpu-pct"};
+  /// Floating point number used in calculating how many drivers must be queued
+  /// for the worker to be considered overloaded.
+  /// Ignored if zero. Default is zero.
+  static constexpr std::string_view
+      kWorkerOverloadedThresholdNumQueuedDriversHwMultiplier{
+          "worker-overloaded-threshold-num-queued-drivers-hw-multiplier"};
+  /// Specifies how many seconds worker has to be not overloaded (in terms of
+  /// memory and CPU) before its status changes to not overloaded.
+  /// This is to prevent spiky fluctuation of the overloaded status.
+  static constexpr std::string_view kWorkerOverloadedCooldownPeriodSec{
+      "worker-overloaded-cooldown-period-sec"};
+  /// If true, the worker starts queuing new tasks when overloaded, and
+  /// starts them gradually when it stops being overloaded.
+  static constexpr std::string_view kWorkerOverloadedTaskQueuingEnabled{
+      "worker-overloaded-task-queuing-enabled"};
 
   /// If true, memory allocated via malloc is periodically checked and a heap
   /// profile is dumped if usage exceeds 'malloc-heap-dump-gb-threshold'.
@@ -425,8 +467,8 @@ class SystemConfig : public ConfigBase {
   /// Specifies the max time to wait for memory reclaim by arbitration. The
   /// memory reclaim might fail if the max wait time has exceeded. If it is
   /// zero, then there is no timeout.
-  static constexpr std::string_view kSharedArbitratorMemoryReclaimMaxWaitTime{
-      "shared-arbitrator.memory-reclaim-max-wait-time"};
+  static constexpr std::string_view kSharedArbitratorMaxMemoryArbitrationTime{
+      "shared-arbitrator.max-memory-arbitration-time"};
 
   /// When shared arbitrator grows memory pool's capacity, the growth bytes will
   /// be adjusted in the following way:
@@ -476,6 +518,56 @@ class SystemConfig : public ConfigBase {
       kSharedArbitratorMemoryPoolMinFreeCapacityPct{
           "shared-arbitrator.memory-pool-min-free-capacity-pct"};
 
+  /// Specifies the starting memory capacity limit for global arbitration to
+  /// search for victim participant to reclaim used memory by abort. For
+  /// participants with capacity larger than the limit, the global arbitration
+  /// choose to abort the youngest participant which has the largest
+  /// participant id. This helps to let the old queries to run to completion.
+  /// The abort capacity limit is reduced by half if could not find a victim
+  /// participant until this reaches to zero.
+  ///
+  /// NOTE: the limit must be zero or a power of 2.
+  static constexpr std::string_view
+      kSharedArbitratorMemoryPoolAbortCapacityLimit{
+          "shared-arbitrator.memory-pool-abort-capacity-limit"};
+
+  /// Specifies the minimum bytes to reclaim from a participant at a time. The
+  /// global arbitration also avoids to reclaim from a participant if its
+  /// reclaimable used capacity is less than this threshold. This is to
+  /// prevent inefficient memory reclaim operations on a participant with
+  /// small reclaimable used capacity which could causes a large number of
+  /// small spilled file on disk.
+  static constexpr std::string_view kSharedArbitratorMemoryPoolMinReclaimBytes{
+      "shared-arbitrator.memory-pool-min-reclaim-bytes"};
+
+  /// Floating point number used in calculating how many threads we would use
+  /// for memory reclaim execution: hw_concurrency x multiplier. 0.5 is
+  /// default.
+  static constexpr std::string_view
+      kSharedArbitratorMemoryReclaimThreadsHwMultiplier{
+          "shared-arbitrator.memory-reclaim-threads-hw-multiplier"};
+
+  /// If not zero, specifies the minimum amount of memory to reclaim by global
+  /// memory arbitration as percentage of total arbitrator memory capacity.
+  static constexpr std::string_view
+      kSharedArbitratorGlobalArbitrationMemoryReclaimPct{
+          "shared-arbitrator.global-arbitration-memory-reclaim-pct"};
+
+  /// The ratio used with 'shared-arbitrator.memory-reclaim-max-wait-time',
+  /// beyond which, global arbitration will no longer reclaim memory by
+  /// spilling, but instead directly abort. It is only in effect when
+  /// 'global-arbitration-enabled' is true
+  static constexpr std::string_view
+      kSharedArbitratorGlobalArbitrationAbortTimeRatio{
+          "shared-arbitrator.global-arbitration-abort-time-ratio"};
+
+  /// If true, global arbitration will not reclaim memory by spilling, but
+  /// only by aborting. This flag is only effective if
+  /// 'shared-arbitrator.global-arbitration-enabled' is true
+  static constexpr std::string_view
+      kSharedArbitratorGlobalArbitrationWithoutSpill{
+          "shared-arbitrator.global-arbitration-without-spill"};
+
   /// Enables the memory usage tracking for the system memory pool used for
   /// cases such as disk spilling.
   static constexpr std::string_view kEnableSystemMemoryPoolUsageTracking{
@@ -493,8 +585,6 @@ class SystemConfig : public ConfigBase {
       "http-server.enable-stats-filter"};
   static constexpr std::string_view kHttpEnableEndpointLatencyFilter{
       "http-server.enable-endpoint-latency-filter"};
-  static constexpr std::string_view kRegisterTestFunctions{
-      "register-test-functions"};
 
   /// The options to configure the max quantized memory allocation size to store
   /// the received http response data.
@@ -628,6 +718,9 @@ class SystemConfig : public ConfigBase {
   static constexpr std::string_view kInternalCommunicationJwtExpirationSeconds{
       "internal-communication.jwt.expiration-seconds"};
 
+  /// Optional string containing the path to the plugin directory
+  static constexpr std::string_view kPluginDir{"plugin.dir"};
+
   /// Below are the Presto properties from config.properties that get converted
   /// to their velox counterparts in BaseVeloxQueryConfig and used solely from
   /// BaseVeloxQueryConfig.
@@ -640,6 +733,39 @@ class SystemConfig : public ConfigBase {
       "driver.max-page-partitioning-buffer-size"};
   static constexpr std::string_view kPlanValidatorFailOnNestedLoopJoin{
       "velox-plan-validator-fail-on-nested-loop-join"};
+
+  // Specifies the default Presto namespace prefix.
+  static constexpr std::string_view kPrestoDefaultNamespacePrefix{
+      "presto.default-namespace"};
+
+  // Specifies the type of worker pool
+  static constexpr std::string_view kPoolType{"pool-type"};
+
+  // Spill related configs
+  static constexpr std::string_view kSpillEnabled{"spill-enabled"};
+  static constexpr std::string_view kJoinSpillEnabled{"join-spill-enabled"};
+  static constexpr std::string_view kAggregationSpillEnabled{
+      "aggregation-spill-enabled"};
+  static constexpr std::string_view kOrderBySpillEnabled{
+      "order-by-spill-enabled"};
+  static constexpr std::string_view kMaxSpillBytes{"max-spill-bytes"};
+
+  // Max wait time for exchange request in seconds.
+  static constexpr std::string_view kRequestDataSizesMaxWaitSec{
+    "exchange.http-client.request-data-sizes-max-wait-sec"};
+
+  static constexpr std::string_view kExchangeIoEvbViolationThresholdMs{
+      "exchange.io-evb-violation-threshold-ms"};
+  static constexpr std::string_view kHttpSrvIoEvbViolationThresholdMs{
+      "http-server.io-evb-violation-threshold-ms"};
+
+  static constexpr std::string_view kMaxLocalExchangePartitionBufferSize{
+      "local-exchange.max-partition-buffer-size"};
+
+  // Add to temporarily help with gradual rollout for text writer
+  // TODO: remove once text writer is fully rolled out
+  static constexpr std::string_view kTextWriterEnabled{
+    "text-writer-enabled"};
 
   SystemConfig();
 
@@ -656,6 +782,8 @@ class SystemConfig : public ConfigBase {
   bool httpServerHttpsEnabled() const;
 
   int httpServerHttpsPort() const;
+
+  bool httpServerHttp2Enabled() const;
 
   /// A list of ciphers (comma separated) that are supported by
   /// server and client. Note Java and folly::SSLContext use different names to
@@ -698,6 +826,8 @@ class SystemConfig : public ConfigBase {
 
   int32_t maxDriversPerTask() const;
 
+  int32_t driverMaxSplitPreload() const;
+
   folly::Optional<int32_t> taskWriterCount() const;
 
   folly::Optional<int32_t> taskPartitionedWriterCount() const;
@@ -711,6 +841,8 @@ class SystemConfig : public ConfigBase {
   double exchangeHttpClientNumIoThreadsHwMultiplier() const;
 
   double exchangeHttpClientNumCpuThreadsHwMultiplier() const;
+
+  double connectorNumCpuThreadsHwMultiplier() const;
 
   double connectorNumIoThreadsHwMultiplier() const;
 
@@ -728,6 +860,8 @@ class SystemConfig : public ConfigBase {
 
   std::string spillerFileCreateConfig() const;
 
+  std::string spillerDirectoryCreateConfig() const;
+
   folly::Optional<std::string> spillerSpillPath() const;
 
   int32_t shutdownOnsetSec() const;
@@ -742,6 +876,16 @@ class SystemConfig : public ConfigBase {
 
   bool systemMemPushBackAbortEnabled() const;
 
+  uint64_t workerOverloadedThresholdMemGb() const;
+
+  uint32_t workerOverloadedThresholdCpuPct() const;
+
+  double workerOverloadedThresholdNumQueuedDriversHwMultiplier() const;
+
+  uint32_t workerOverloadedCooldownPeriodSec() const;
+
+  bool workerOverloadedTaskQueuingEnabled() const;
+
   bool mallocMemHeapDumpEnabled() const;
 
   uint32_t mallocHeapDumpThresholdGb() const;
@@ -751,6 +895,8 @@ class SystemConfig : public ConfigBase {
   uint32_t mallocMemMaxHeapDumpFiles() const;
 
   bool asyncDataCacheEnabled() const;
+
+  bool queryDataCacheEnabledDefault() const;
 
   uint64_t asyncCacheSsdGb() const;
 
@@ -792,7 +938,7 @@ class SystemConfig : public ConfigBase {
 
   std::string sharedArbitratorMemoryPoolReservedCapacity() const;
 
-  std::string sharedArbitratorMemoryReclaimWaitTime() const;
+  std::string sharedArbitratorMaxMemoryArbitrationTime() const;
 
   std::string sharedArbitratorMemoryPoolInitialCapacity() const;
 
@@ -803,6 +949,18 @@ class SystemConfig : public ConfigBase {
   std::string sharedArbitratorMemoryPoolMinFreeCapacity() const;
 
   std::string sharedArbitratorMemoryPoolMinFreeCapacityPct() const;
+
+  std::string sharedArbitratorMemoryPoolAbortCapacityLimit() const;
+
+  std::string sharedArbitratorMemoryPoolMinReclaimBytes() const;
+
+  std::string sharedArbitratorMemoryReclaimThreadsHwMultiplier() const;
+
+  std::string sharedArbitratorGlobalArbitrationMemoryReclaimPct() const;
+
+  std::string sharedArbitratorGlobalArbitrationAbortTimeRatio() const;
+
+  std::string sharedArbitratorGlobalArbitrationWithoutSpill() const;
 
   int32_t queryMemoryGb() const;
 
@@ -873,6 +1031,32 @@ class SystemConfig : public ConfigBase {
   bool enableRuntimeMetricsCollection() const;
 
   bool prestoNativeSidecar() const;
+
+  std::string prestoDefaultNamespacePrefix() const;
+
+  std::string poolType() const;
+
+  bool spillEnabled() const;
+
+  bool joinSpillEnabled() const;
+
+  bool aggregationSpillEnabled() const;
+
+  bool orderBySpillEnabled() const;
+
+  uint64_t maxSpillBytes() const;
+
+  int requestDataSizesMaxWaitSec() const;
+
+  std::string pluginDir() const;
+
+  int32_t exchangeIoEvbViolationThresholdMs() const;
+
+  int32_t httpSrvIoEvbViolationThresholdMs() const;
+
+  uint64_t maxLocalExchangePartitionBufferSize() const;
+
+  bool textWriterEnabled() const;
 };
 
 /// Provides access to node properties defined in node.properties file.
@@ -885,6 +1069,7 @@ class NodeConfig : public ConfigBase {
   static constexpr std::string_view kNodeInternalAddress{
       "node.internal-address"};
   static constexpr std::string_view kNodeLocation{"node.location"};
+  static constexpr std::string_view kNodePrometheusExecutorThreads{"node.prometheus.num-executor-threads"};
 
   NodeConfig();
 
@@ -893,6 +1078,8 @@ class NodeConfig : public ConfigBase {
   static NodeConfig* instance();
 
   std::string nodeEnvironment() const;
+
+  int prometheusExecutorThreads() const;
 
   std::string nodeId() const;
 

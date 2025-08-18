@@ -43,7 +43,7 @@ It will also consider switching the left and right inputs to the join.  In ``AUT
 mode, Presto will default to hash distributed joins if no cost could be computed, such as if
 the tables do not have statistics. 
 
-The corresponding configuration property is :ref:`admin/properties:\`\`join-distribution-type\`\``. 
+The corresponding configuration property is :ref:`admin/properties:\`\`join-distribution-type\`\``.
 
 
 ``redistribute_writes``
@@ -81,6 +81,60 @@ Number of local parallel table writer threads per worker for partitioned writes.
 set, the number set by ``task_writer_count`` will be used. It is required to be a power
 of two for a Java query engine.
 
+``single_node_execution_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+This property ensures that queries scheduled in this cluster use only a single
+node for execution, which may improve performance for small queries which can
+be executed within a single node.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`single-node-execution-enabled\`\``.
+
+``offset_clause_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+To enable the ``OFFSET`` clause in SQL query expressions, set this property to ``true``.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`offset-clause-enabled\`\``.
+
+``check_access_control_on_utilized_columns_only``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``true``
+
+Apply access control rules on only those columns that are required to produce the query output.
+
+Note: Setting this property to true with the following kinds of queries:
+
+* queries that have ``USING`` in a join condition
+* queries that have duplicate named common table expressions (CTE)
+
+causes the query to be evaluated as if the property is set to false and checks the access control for all columns.
+
+To avoid these problems:
+
+* replace all ``USING`` join conditions in a query with ``ON`` join conditions
+* set unique names for all CTEs in a query
+
+The corresponding configuration property is :ref:`admin/properties:\`\`check-access-control-on-utilized-columns-only\`\``.
+
+``max_serializable_object_size``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``long``
+* **Default value:** ``1000``
+
+Maximum object size in bytes that can be considered serializable in a function call by the coordinator.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`max-serializable-object-size\`\``.
+
 Spilling Properties
 -------------------
 
@@ -99,7 +153,7 @@ window functions, sorting and other join types.
 
 Be aware that this is an experimental feature and should be used with care.
 
-The corresponding configuration property is :ref:`admin/properties:\`\`experimental.spill-enabled\`\``. 
+The corresponding configuration property is :ref:`admin/properties:\`\`experimental.spill-enabled\`\``.
 
 ``join_spill_enabled``
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -324,4 +378,130 @@ The corresponding configuration property is :ref:`admin/properties:\`\`optimizer
 
 Enable retry for failed queries who can potentially be helped by HBO. 
 
-The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.retry-query-with-history-based-optimization\`\``. 
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.retry-query-with-history-based-optimization\`\``.
+
+``optimizer_inner_join_pushdown_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable push down inner join predicates to database. Only allows equality joins to be pushed down.
+Use :ref:`admin/properties-session:\`\`optimizer_inequality_join_pushdown_enabled\`\`` along with this configuration to push down inequality join predicates.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.inner-join-pushdown-enabled\`\``.
+
+``optimizer_inequality_join_pushdown_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Enable push down inner join inequality predicates to database. For this configuration to be enabled, :ref:`admin/properties-session:\`\`optimizer_inner_join_pushdown_enabled\`\`` should be set to ``true``.
+The corresponding configuration property is :ref:`admin/properties:\`\`optimizer.inequality-join-pushdown-enabled\`\``.
+
+``verbose_optimizer_info_enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Use this and ``optimizers_to_enable_verbose_runtime_stats`` in development to collect valuable debugging information about the optimizer. 
+
+Set to ``true`` to use as shown in this example: 
+
+``SET SESSION verbose_optimizer_info_enabled=true;``
+
+``optimizers_to_enable_verbose_runtime_stats``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``string``
+* **Allowed values:** ``ALL``, an optimizer rule name, or multiple comma-separated optimization rule names
+* **Default value:** ``none``
+
+Use this and ``verbose_optimizer_info_enabled`` in development to collect valuable debugging information about the optimizer. 
+
+Run the following command to use ``optimizers_to_enable_verbose_runtime_stats``: 
+
+``SET SESSION optimizers_to_enable_verbose_runtime_stats=ALL;``
+
+JDBC Properties
+---------------
+
+
+``useJdbcMetadataCache``
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Cache the result of the JDBC queries that fetch metadata about tables and columns.
+
+``allowDropTable``
+^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``boolean``
+* **Default value:** ``false``
+
+Allow connector to drop tables.
+
+``metadataCacheTtl``
+^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``0``
+
+Setting a duration controls how long to cache data.
+
+``metadataCacheRefreshInterval``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``0``
+
+``metadataCacheMaximumSize``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``long``
+* **Default value:** ``1``
+
+``metadataCacheThreadPoolSize``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``int``
+* **Default value:** ``1``
+
+The value represents the max background fetch threads for refreshing metadata.
+
+Query Manager Properties
+------------------------
+
+``query_client_timeout``
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``5m``
+
+This property can be used to configure how long a query runs without contact
+from the client application, such as the CLI, before it's abandoned.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`query.client.timeout\`\``.
+
+``query_priority``
+^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``int``
+* **Default value:** ``1``
+
+This property defines the priority of queries for execution and plays an important role in query admission.
+Queries with higher priority are scheduled first than the ones with lower priority. Higher number indicates higher priority.
+
+``query_max_queued_time``
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* **Type:** ``Duration``
+* **Default value:** ``100d``
+
+Use to configure how long a query can be queued before it is terminated.
+
+The corresponding configuration property is :ref:`admin/properties:\`\`query.max-queued-time\`\``.

@@ -48,12 +48,15 @@ class FunctionMetadataTest : public ::testing::Test {
     EXPECT_EQ(metadataList.size(), expectedSize);
     std::string expectedStr = slurp(test::utils::getDataPath(expectedFile));
     auto expected = json::parse(expectedStr);
+    auto comparator = [](const json& a, const json& b) {
+      return (a["outputType"] < b["outputType"]);
+    };
 
     json::array_t expectedList = expected[name];
-    std::sort(expectedList.begin(), expectedList.end());
-    std::sort(metadataList.begin(), metadataList.end());
+    std::sort(expectedList.begin(), expectedList.end(), comparator);
+    std::sort(metadataList.begin(), metadataList.end(), comparator);
     for (auto i = 0; i < expectedSize; i++) {
-      EXPECT_EQ(expectedList[i], metadataList[i]);
+      EXPECT_EQ(expectedList[i], metadataList[i]) << "Position: " << i;
     }
   }
 
@@ -61,7 +64,7 @@ class FunctionMetadataTest : public ::testing::Test {
 };
 
 TEST_F(FunctionMetadataTest, approxMostFrequent) {
-  testFunction("approx_most_frequent", "ApproxMostFrequent.json", 12);
+  testFunction("approx_most_frequent", "ApproxMostFrequent.json", 7);
 }
 
 TEST_F(FunctionMetadataTest, arrayFrequency) {
@@ -73,15 +76,23 @@ TEST_F(FunctionMetadataTest, combinations) {
 }
 
 TEST_F(FunctionMetadataTest, covarSamp) {
-  testFunction("covar_samp", "CovarSamp.json", 4);
+  testFunction("covar_samp", "CovarSamp.json", 2);
 }
 
 TEST_F(FunctionMetadataTest, elementAt) {
   testFunction("element_at", "ElementAt.json", 3);
 }
 
+TEST_F(FunctionMetadataTest, greatest) {
+  testFunction("greatest", "Greatest.json", 13);
+}
+
 TEST_F(FunctionMetadataTest, lead) {
   testFunction("lead", "Lead.json", 3);
+}
+
+TEST_F(FunctionMetadataTest, mod) {
+  testFunction("mod", "Mod.json", 7);
 }
 
 TEST_F(FunctionMetadataTest, ntile) {
@@ -89,11 +100,11 @@ TEST_F(FunctionMetadataTest, ntile) {
 }
 
 TEST_F(FunctionMetadataTest, setAgg) {
-  testFunction("set_agg", "SetAgg.json", 2);
+  testFunction("set_agg", "SetAgg.json", 1);
 }
 
 TEST_F(FunctionMetadataTest, stddevSamp) {
-  testFunction("stddev_samp", "StddevSamp.json", 10);
+  testFunction("stddev_samp", "StddevSamp.json", 5);
 }
 
 TEST_F(FunctionMetadataTest, transformKeys) {
@@ -101,5 +112,5 @@ TEST_F(FunctionMetadataTest, transformKeys) {
 }
 
 TEST_F(FunctionMetadataTest, variance) {
-  testFunction("variance", "Variance.json", 10);
+  testFunction("variance", "Variance.json", 5);
 }

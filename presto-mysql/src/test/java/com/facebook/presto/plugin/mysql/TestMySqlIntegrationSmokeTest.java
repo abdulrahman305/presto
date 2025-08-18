@@ -23,7 +23,6 @@ import com.facebook.presto.tests.AbstractTestIntegrationSmokeTest;
 import com.facebook.presto.tests.DistributedQueryRunner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.Duration;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
@@ -42,7 +41,6 @@ import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.tpch.TpchTable.ORDERS;
 import static java.lang.String.format;
-import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
@@ -51,7 +49,6 @@ public class TestMySqlIntegrationSmokeTest
         extends AbstractTestIntegrationSmokeTest
 {
     private static final MySqlOptions MY_SQL_OPTIONS = MySqlOptions.builder()
-            .setCommandTimeout(new Duration(90, SECONDS))
             .build();
 
     private final TestingMySqlServer mysqlServer;
@@ -104,6 +101,13 @@ public class TestMySqlIntegrationSmokeTest
 
         assertUpdate("DROP TABLE test_drop");
         assertFalse(getQueryRunner().tableExists(getSession(), "test_drop"));
+    }
+
+    @Test
+    public void testIgnoredSchemas()
+    {
+        MaterializedResult actual = computeActual("SHOW SCHEMAS");
+        assertFalse(actual.getMaterializedRows().stream().anyMatch(schemaResult -> schemaResult.getField(0).equals("mysql")));
     }
 
     @Test
@@ -189,6 +193,26 @@ public class TestMySqlIntegrationSmokeTest
                 " CAST('2018-06-02 11:13:45.123' AS TIMESTAMP)");
         assertUpdate("DROP TABLE test_timestamp");
         assertUpdate("DROP TABLE test_timestamp2");
+    }
+
+    @Test
+    public void testMysqlGeometry()
+            throws SQLException
+    {
+        execute("CREATE TABLE tpch.test_geometry (g GEOMETRY)");
+
+        execute("INSERT INTO tpch.test_geometry VALUES (ST_GeomFromText('POINT(1 2)'))");
+        execute("INSERT INTO tpch.test_geometry VALUES (ST_GeomFromText('LINESTRING(0 0, 5 5, 10 10)'))");
+        execute("INSERT INTO tpch.test_geometry VALUES (ST_GeomFromText('POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))'))");
+
+        assertQuery(
+                "SELECT CAST(g AS VARCHAR) FROM test_geometry",
+                "VALUES " +
+                        "CAST('POINT (1 2)' AS VARCHAR), " +
+                        "CAST('LINESTRING (0 0, 5 5, 10 10)' AS VARCHAR), " +
+                        "CAST('POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))' AS VARCHAR)");
+
+        assertUpdate("DROP TABLE tpch.test_geometry");
     }
 
     @Test

@@ -19,6 +19,7 @@ import com.facebook.airlift.http.client.Request;
 import com.facebook.airlift.http.client.jetty.JettyHttpClient;
 import com.facebook.airlift.log.Logger;
 import com.facebook.airlift.testing.Assertions;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.Session.SessionBuilder;
 import com.facebook.presto.common.QualifiedObjectName;
@@ -42,6 +43,7 @@ import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.spi.eventlistener.EventListener;
 import com.facebook.presto.split.PageSourceManager;
 import com.facebook.presto.split.SplitManager;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
@@ -55,14 +57,17 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Closer;
 import com.google.inject.Module;
-import io.airlift.units.Duration;
 import org.intellij.lang.annotations.Language;
 import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
+import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -71,6 +76,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -81,6 +87,7 @@ import java.util.function.Function;
 import static com.facebook.airlift.http.client.JsonResponseHandler.createJsonResponseHandler;
 import static com.facebook.airlift.http.client.Request.Builder.prepareGet;
 import static com.facebook.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.airlift.units.Duration.nanosSince;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_USER;
 import static com.facebook.presto.spi.NodePoolType.INTERMEDIATE;
 import static com.facebook.presto.spi.NodePoolType.LEAF;
@@ -92,7 +99,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.units.Duration.nanosSince;
 import static java.lang.String.format;
 import static java.lang.System.nanoTime;
 import static java.util.Objects.requireNonNull;
@@ -357,14 +363,15 @@ public class DistributedQueryRunner
         }
         prestoClients = prestoClientsBuilder.build();
 
-        long start = nanoTime();
-        while (!allNodesGloballyVisible()) {
-            Assertions.assertLessThan(nanosSince(start), new Duration(100, SECONDS));
-            MILLISECONDS.sleep(10);
+        try {
+            waitForAllNodesGloballyVisible();
         }
-        log.info("Announced servers in %s", nanosSince(start).convertToMostSuccinctTimeUnit());
+        catch (TimeoutException e) {
+            closer.close();
+            throw e;
+        }
 
-        start = nanoTime();
+        long start = nanoTime();
         for (TestingPrestoServer server : servers) {
             server.getMetadata().registerBuiltInFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
         }
@@ -411,6 +418,39 @@ public class DistributedQueryRunner
 
         NodeState state = client.execute(request, createJsonResponseHandler(jsonCodec(NodeState.class)));
         return state;
+    }
+
+    public NodeState getWorkerInfoState(int worker)
+    {
+        URI uri = URI.create(getWorker(worker).getBaseUrl().toString() + "/v1/info/state");
+        Request request = prepareGet()
+                .setHeader(PRESTO_USER, DEFAULT_USER)
+                .setUri(uri)
+                .build();
+
+        NodeState state = client.execute(request, createJsonResponseHandler(jsonCodec(NodeState.class)));
+        return state;
+    }
+
+    public int sendWorkerRequest(int worker, String body)
+    {
+        try {
+            URL url = new URL(getWorker(worker).getBaseUrl().toString() + "/v1/info/state");
+            HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("PUT");
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", "application/json");
+
+            try (OutputStream os = connection.getOutputStream()) {
+                byte[] input = body.getBytes(StandardCharsets.UTF_8);
+                os.write(input, 0, input.length);
+            }
+            return connection.getResponseCode();
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+            return 500;
+        }
     }
 
     private static TestingPrestoServer createTestingPrestoServer(
@@ -479,22 +519,49 @@ public class DistributedQueryRunner
         return server;
     }
 
-    private boolean allNodesGloballyVisible()
+    private void waitForAllNodesGloballyVisible()
+            throws Exception
     {
-        int expectedActiveNodesForRm = externalWorkers.size() + servers.size();
-        int expectedActiveNodesForCoordinator = externalWorkers.size() + servers.size();
+        long startTimeInMs = nanoTime();
+        int expectedActiveNodes = externalWorkers.size() + servers.size();
+        Duration timeout = new Duration(100, SECONDS);
 
-        for (TestingPrestoServer server : servers) {
+        for (int serverIndex = 0; serverIndex < servers.size(); ) {
+            TestingPrestoServer server = servers.get(serverIndex);
             AllNodes allNodes = server.refreshNodes();
             int activeNodeCount = allNodes.getActiveNodes().size();
 
-            if (!allNodes.getInactiveNodes().isEmpty() ||
-                    (server.isCoordinator() && activeNodeCount != expectedActiveNodesForCoordinator) ||
-                    (server.isResourceManager() && activeNodeCount != expectedActiveNodesForRm)) {
-                return false;
+            if (!allNodes.getInactiveNodes().isEmpty()) {
+                throwTimeoutIfNotReady(
+                        startTimeInMs,
+                        timeout,
+                        format("Timed out waiting for all nodes to be globally visible. Inactive nodes: %s", allNodes.getInactiveNodes()));
+                MILLISECONDS.sleep(10);
+                serverIndex = 0;
+            }
+            else if ((server.isCoordinator() || server.isResourceManager()) && activeNodeCount != expectedActiveNodes) {
+                throwTimeoutIfNotReady(
+                        startTimeInMs,
+                        timeout,
+                        format("Timed out waiting for all nodes to be globally visible. Node count: %s, expected: %s", activeNodeCount, expectedActiveNodes));
+                MILLISECONDS.sleep(10);
+                serverIndex = 0;
+            }
+            else {
+                log.info("Server %s has %s active nodes", server.getBaseUrl(), activeNodeCount);
+                serverIndex++;
             }
         }
-        return true;
+
+        log.info("Announced servers in %s", nanosSince(startTimeInMs).convertToMostSuccinctTimeUnit());
+    }
+
+    private static void throwTimeoutIfNotReady(long startTimeInMs, Duration timeout, String message)
+            throws TimeoutException
+    {
+        if (nanosSince(startTimeInMs).compareTo(timeout) >= 0) {
+            throw new TimeoutException(message);
+        }
     }
 
     public TestingPrestoClient getRandomClient()
@@ -569,10 +636,10 @@ public class DistributedQueryRunner
     }
 
     @Override
-    public Optional<EventListener> getEventListener()
+    public List<EventListener> getEventListeners()
     {
         checkState(coordinators.size() == 1, "Expected a single coordinator");
-        return coordinators.get(0).getEventListener();
+        return coordinators.get(0).getEventListeners();
     }
 
     @Override
@@ -589,6 +656,13 @@ public class DistributedQueryRunner
         return coordinators.get(0).getPlanCheckerProviderManager();
     }
 
+    @Override
+    public ExpressionOptimizerManager getExpressionManager()
+    {
+        checkState(coordinators.size() == 1, "Expected a single coordinator");
+        return coordinators.get(0).getExpressionManager();
+    }
+
     public TestingPrestoServer getCoordinator()
     {
         checkState(coordinators.size() == 1, "Expected a single coordinator");
@@ -599,6 +673,12 @@ public class DistributedQueryRunner
     {
         checkState(coordinator < coordinators.size(), format("Expected coordinator index %d < %d", coordinator, coordinatorCount));
         return coordinators.get(coordinator);
+    }
+
+    private TestingPrestoServer getWorker(int worker)
+    {
+        checkState(worker < servers.size(), format("Expected worker index %d < %d", worker, servers.size()));
+        return servers.get(worker);
     }
 
     public List<TestingPrestoServer> getCoordinators()
@@ -689,7 +769,7 @@ public class DistributedQueryRunner
     public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
     {
         for (TestingPrestoServer server : servers) {
-            server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+            server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties, server.getPluginNodeManager());
         }
     }
 
@@ -904,7 +984,7 @@ public class DistributedQueryRunner
             if (coordinatorOnly && !server.isCoordinator()) {
                 continue;
             }
-            server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
+            server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties, server.getPluginNodeManager());
         }
     }
 
@@ -933,13 +1013,30 @@ public class DistributedQueryRunner
     }
 
     @Override
-    public void loadSessionPropertyProvider(String sessionPropertyProviderName)
+    public void loadSessionPropertyProvider(String sessionPropertyProviderName, Map<String, String> properties)
     {
         for (TestingPrestoServer server : servers) {
             server.getMetadata().getSessionPropertyManager().loadSessionPropertyProvider(
                     sessionPropertyProviderName,
+                    properties,
                     Optional.ofNullable(server.getMetadata().getFunctionAndTypeManager()),
                     Optional.ofNullable(server.getPluginNodeManager()));
+        }
+    }
+
+    @Override
+    public void loadTypeManager(String typeManagerName)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getMetadata().getFunctionAndTypeManager().loadTypeManager(typeManagerName);
+        }
+    }
+
+    @Override
+    public void loadPlanCheckerProviderManager(String planCheckerProviderName, Map<String, String> properties)
+    {
+        for (TestingPrestoServer server : servers) {
+            server.getPlanCheckerProviderManager().loadPlanCheckerProvider(planCheckerProviderName, properties, server.getPluginNodeManager());
         }
     }
 

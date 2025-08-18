@@ -16,6 +16,7 @@ package com.facebook.presto.spark.execution;
 import com.facebook.airlift.json.Codec;
 import com.facebook.airlift.json.JsonCodec;
 import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.Session;
 import com.facebook.presto.cost.FragmentStatsProvider;
 import com.facebook.presto.cost.HistoryBasedPlanStatisticsTracker;
@@ -67,7 +68,6 @@ import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
 import com.facebook.presto.transaction.TransactionManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.UncheckedExecutionException;
-import io.airlift.units.Duration;
 import org.apache.spark.MapOutputStatistics;
 import org.apache.spark.SimpleFutureAction;
 import org.apache.spark.SparkException;
@@ -226,7 +226,7 @@ public class PrestoSparkAdaptiveQueryExecution
 
     private IterativePlanFragmenter createIterativePlanFragmenter(PlanCheckerProviderManager planCheckerProviderManager)
     {
-        boolean forceSingleNode = false;
+        boolean noExchange = false;
         Function<PlanFragmentId, Boolean> isFragmentFinished = this.executedFragments::contains;
 
         // TODO Create the IterativePlanFragmenter by injection (it has to become stateless first--check PR 18811).
@@ -234,13 +234,13 @@ public class PrestoSparkAdaptiveQueryExecution
                 this.planAndMore.getPlan(),
                 isFragmentFinished,
                 this.metadata,
-                new PlanChecker(this.featuresConfig, forceSingleNode, planCheckerProviderManager),
+                new PlanChecker(this.featuresConfig, noExchange, planCheckerProviderManager),
                 this.idAllocator,
                 new PrestoSparkNodePartitioningManager(this.partitioningProviderManager),
                 this.queryManagerConfig,
                 this.session,
                 this.warningCollector,
-                forceSingleNode);
+                noExchange);
     }
 
     @Override

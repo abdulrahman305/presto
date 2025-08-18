@@ -3,6 +3,7 @@
     {
       "docString": "presto.default.ntile",
       "functionKind": "WINDOW",
+      "longVariableConstraints":[],
       "outputType": "bigint",
       "paramTypes": [
         "bigint"
@@ -12,7 +13,9 @@
         "language": "CPP",
         "nullCallClause": "CALLED_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints":[],
+      "variableArity":false
     }
   ]
 }

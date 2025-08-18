@@ -3,9 +3,10 @@
     {
       "docString": "presto.default.element_at",
       "functionKind": "SCALAR",
-      "outputType": "T",
+      "longVariableConstraints":[],
+      "outputType": "t",
       "paramTypes": [
-        "array(T)",
+        "array(t)",
         "integer"
       ],
       "routineCharacteristics": {
@@ -13,14 +14,25 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints": [
+        {
+          "comparableRequired":false,
+          "name":"t",
+          "nonDecimalNumericRequired":false,
+          "orderableRequired":false,
+          "variadicBound":""
+        }
+      ],
+      "variableArity":false
     },
     {
       "docString": "presto.default.element_at",
       "functionKind": "SCALAR",
-      "outputType": "T",
+      "longVariableConstraints":[],
+      "outputType": "t",
       "paramTypes": [
-        "array(T)",
+        "array(t)",
         "bigint"
       ],
       "routineCharacteristics": {
@@ -28,22 +40,50 @@
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints": [
+        {
+          "comparableRequired":false,
+          "name":"t",
+          "nonDecimalNumericRequired":false,
+          "orderableRequired":false,
+          "variadicBound":""
+        }
+      ],
+      "variableArity":false
     },
     {
       "docString": "presto.default.element_at",
       "functionKind": "SCALAR",
-      "outputType": "V",
+      "longVariableConstraints":[],
+      "outputType": "v",
       "paramTypes": [
-        "map(K,V)",
-        "K"
+        "map(k,v)",
+        "k"
       ],
       "routineCharacteristics": {
         "determinism": "DETERMINISTIC",
         "language": "CPP",
         "nullCallClause": "RETURNS_NULL_ON_NULL_INPUT"
       },
-      "schema": "default"
+      "schema": "default",
+      "typeVariableConstraints": [
+        {
+          "comparableRequired":false,
+          "name":"v",
+          "nonDecimalNumericRequired":false,
+          "orderableRequired":false,
+          "variadicBound":""
+        },
+        {
+          "comparableRequired":false,
+          "name":"k",
+          "nonDecimalNumericRequired":false,
+          "orderableRequired":false,
+          "variadicBound":""
+        }
+      ],
+      "variableArity":false
     }
   ]
 }

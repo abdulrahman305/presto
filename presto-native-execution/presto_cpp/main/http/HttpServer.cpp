@@ -25,22 +25,7 @@ void sendOkResponse(proxygen::ResponseHandler* downstream) {
 }
 
 void sendOkResponse(proxygen::ResponseHandler* downstream, const json& body) {
-  // nlohmann::json throws when it finds invalid UTF-8 characters. In that case
-  // the server will crash. We handle such situation here and generate body
-  // replacing the faulty UTF-8 sequences.
-  std::string messageBody;
-  try {
-    messageBody = body.dump();
-  } catch (const std::exception& e) {
-    messageBody =
-        body.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace);
-    LOG(WARNING) << "Failed to serialize json to string. "
-                    "Will retry with 'replace' option. "
-                    "Json Dump:\n"
-                 << messageBody;
-  }
-
-  sendOkResponse(downstream, messageBody);
+  sendResponse(downstream, body, http::kHttpOk);
 }
 
 void sendOkResponse(
@@ -75,6 +60,33 @@ void sendErrorResponse(
       .sendWithEOM();
 }
 
+void sendResponse(
+    proxygen::ResponseHandler* downstream,
+    const json& body,
+    uint16_t status) {
+  // nlohmann::json throws when it finds invalid UTF-8 characters. In that case
+  // the server will crash. We handle such situation here and generate body
+  // replacing the faulty UTF-8 sequences.
+  std::string messageBody;
+  try {
+    messageBody = body.dump();
+  } catch (const std::exception& e) {
+    messageBody =
+        body.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace);
+    LOG(WARNING) << "Failed to serialize json to string. "
+                    "Will retry with 'replace' option. "
+                    "Json Dump:\n"
+                 << messageBody;
+  }
+
+  proxygen::ResponseBuilder(downstream)
+      .status(status, "")
+      .header(
+          proxygen::HTTP_HEADER_CONTENT_TYPE, http::kMimeTypeApplicationJson)
+      .body(messageBody)
+      .sendWithEOM();
+}
+
 HttpConfig::HttpConfig(const folly::SocketAddress& address, bool reusePort)
     : address_(address), reusePort_(reusePort) {}
 
@@ -94,12 +106,14 @@ HttpsConfig::HttpsConfig(
     const std::string& certPath,
     const std::string& keyPath,
     const std::string& supportedCiphers,
-    bool reusePort)
+    bool reusePort,
+    bool http2Enabled)
     : address_(address),
       certPath_(certPath),
       keyPath_(keyPath),
       supportedCiphers_(supportedCiphers),
-      reusePort_(reusePort) {
+      reusePort_(reusePort),
+      http2Enabled_(http2Enabled) {
   // Wangle separates ciphers by ":" where in the config it's separated with ","
   std::replace(supportedCiphers_.begin(), supportedCiphers_.end(), ',', ':');
 }
@@ -114,6 +128,9 @@ proxygen::HTTPServer::IPConfig HttpsConfig::ipConfig() const {
       folly::SSLContext::VerifyClientCertificate::DO_NOT_REQUEST;
   sslCfg.setCertificate(certPath_, keyPath_, "");
   sslCfg.sslCiphers = supportedCiphers_;
+  if (http2Enabled_) {
+    sslCfg.setNextProtocols({"h2", "http/1.1"});
+  }
 
   ipConfig.sslConfigs.push_back(sslCfg);
 
@@ -264,8 +281,8 @@ void HttpServer::start(
   options.handlerFactories = handlerFactories.build();
 
   // Increase the default flow control to 1MB/10MB
-  options.initialReceiveWindow = uint32_t(1 << 20);
-  options.receiveStreamWindowSize = uint32_t(1 << 20);
+  options.initialReceiveWindow = static_cast<uint32_t>(1 << 20);
+  options.receiveStreamWindowSize = static_cast<uint32_t>(1 << 20);
   options.receiveSessionWindowSize = 10 * (1 << 20);
   options.h2cEnabled = true;
 

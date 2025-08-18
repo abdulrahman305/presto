@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.hive.orc;
 
+import com.facebook.airlift.units.DataSize;
 import com.facebook.presto.common.Page;
 import com.facebook.presto.common.Subfield;
 import com.facebook.presto.common.function.SqlFunctionProperties;
@@ -68,14 +69,12 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
-import io.airlift.units.DataSize;
+import jakarta.inject.Inject;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.orc.OrcSerde;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.joda.time.DateTimeZone;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -110,6 +109,7 @@ import static com.facebook.presto.hive.HiveSessionProperties.isAdaptiveFilterReo
 import static com.facebook.presto.hive.HiveSessionProperties.isLegacyTimestampBucketing;
 import static com.facebook.presto.hive.HiveUtil.getPhysicalHiveColumnHandles;
 import static com.facebook.presto.hive.HiveUtil.typedPartitionKey;
+import static com.facebook.presto.hive.MetadataUtils.isEntireColumn;
 import static com.facebook.presto.hive.orc.OrcPageSourceFactoryUtils.getOrcDataSource;
 import static com.facebook.presto.hive.orc.OrcPageSourceFactoryUtils.getOrcReader;
 import static com.facebook.presto.hive.orc.OrcPageSourceFactoryUtils.mapToPrestoException;
@@ -285,7 +285,7 @@ public class OrcSelectivePageSourceFactory
 
         boolean supplyRowIDs = selectedColumns.stream().anyMatch(column -> HiveColumnHandle.isRowIdColumnHandle(column));
         checkArgument(!supplyRowIDs || rowIDPartitionComponent.isPresent(), "rowIDPartitionComponent required when supplying row IDs");
-        byte[] partitionID = rowIDPartitionComponent.orElse(new byte[0]);
+        byte[] partitionID = rowIDPartitionComponent.orElseGet(() -> new byte[0]);
         String rowGroupId = path.getName();
 
         DataSize maxMergeDistance = getOrcMaxMergeDistance(session);
@@ -425,7 +425,7 @@ public class OrcSelectivePageSourceFactory
                 .forEach(column -> outputSubfields.put(column.getHiveColumnIndex(), new HashSet<>(column.getRequiredSubfields())));
 
         Map<Integer, Set<Subfield>> predicateSubfields = new HashMap<>();
-        SubfieldExtractor subfieldExtractor = new SubfieldExtractor(functionResolution, rowExpressionService.getExpressionOptimizer(), session);
+        SubfieldExtractor subfieldExtractor = new SubfieldExtractor(functionResolution, rowExpressionService.getExpressionOptimizer(session), session);
         remainingPredicate.accept(
                 new RequiredSubfieldsExtractor(subfieldExtractor),
                 subfield -> predicateSubfields.computeIfAbsent(columnIndices.get(subfield.getRootName()), v -> new HashSet<>()).add(subfield));
@@ -560,11 +560,6 @@ public class OrcSelectivePageSourceFactory
         }
 
         return ImmutableMap.copyOf(filtersByColumn);
-    }
-
-    private static boolean isEntireColumn(Subfield subfield)
-    {
-        return subfield.getPath().isEmpty();
     }
 
     private static OrcPredicate toOrcPredicate(TupleDomain<Subfield> domainPredicate, List<HiveColumnHandle> physicalColumns, Map<Integer, HiveCoercer> coercers, TypeManager typeManager, int domainCompactionThreshold, boolean orcBloomFiltersEnabled)

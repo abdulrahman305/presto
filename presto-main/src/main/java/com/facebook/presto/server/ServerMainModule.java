@@ -21,6 +21,8 @@ import com.facebook.airlift.json.JsonObjectMapperProvider;
 import com.facebook.airlift.stats.GcMonitor;
 import com.facebook.airlift.stats.JmxGcMonitor;
 import com.facebook.airlift.stats.PauseMeter;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.Duration;
 import com.facebook.drift.client.ExceptionClassification;
 import com.facebook.drift.client.address.AddressSelector;
 import com.facebook.drift.codec.utils.DefaultThriftCodecsModule;
@@ -41,8 +43,8 @@ import com.facebook.presto.common.block.BlockEncodingManager;
 import com.facebook.presto.common.block.BlockEncodingSerde;
 import com.facebook.presto.common.type.Type;
 import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.connector.ConnectorCodecManager;
 import com.facebook.presto.connector.ConnectorManager;
-import com.facebook.presto.connector.ConnectorTypeSerdeManager;
 import com.facebook.presto.connector.system.SystemConnectorModule;
 import com.facebook.presto.cost.FilterStatsCalculator;
 import com.facebook.presto.cost.HistoryBasedOptimizationConfig;
@@ -89,7 +91,6 @@ import com.facebook.presto.memory.ReservedSystemMemoryConfig;
 import com.facebook.presto.metadata.AnalyzePropertyManager;
 import com.facebook.presto.metadata.CatalogManager;
 import com.facebook.presto.metadata.ColumnPropertyManager;
-import com.facebook.presto.metadata.ConnectorMetadataUpdaterManager;
 import com.facebook.presto.metadata.DiscoveryNodeManager;
 import com.facebook.presto.metadata.ForNodeManager;
 import com.facebook.presto.metadata.FunctionAndTypeManager;
@@ -97,13 +98,15 @@ import com.facebook.presto.metadata.HandleJsonModule;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.MetadataUpdates;
 import com.facebook.presto.metadata.SchemaPropertyManager;
 import com.facebook.presto.metadata.SessionPropertyManager;
+import com.facebook.presto.metadata.SessionPropertyProviderConfig;
 import com.facebook.presto.metadata.StaticCatalogStore;
 import com.facebook.presto.metadata.StaticCatalogStoreConfig;
 import com.facebook.presto.metadata.StaticFunctionNamespaceStore;
 import com.facebook.presto.metadata.StaticFunctionNamespaceStoreConfig;
+import com.facebook.presto.metadata.StaticTypeManagerStore;
+import com.facebook.presto.metadata.StaticTypeManagerStoreConfig;
 import com.facebook.presto.metadata.TablePropertyManager;
 import com.facebook.presto.nodeManager.PluginNodeManager;
 import com.facebook.presto.operator.ExchangeClientConfig;
@@ -114,12 +117,16 @@ import com.facebook.presto.operator.FileFragmentResultCacheManager;
 import com.facebook.presto.operator.ForExchange;
 import com.facebook.presto.operator.FragmentCacheStats;
 import com.facebook.presto.operator.FragmentResultCacheManager;
+import com.facebook.presto.operator.HttpAndThriftRpcShuffleClientProvider;
+import com.facebook.presto.operator.HttpShuffleClientProvider;
 import com.facebook.presto.operator.LookupJoinOperators;
 import com.facebook.presto.operator.NoOpFragmentResultCacheManager;
 import com.facebook.presto.operator.OperatorStats;
 import com.facebook.presto.operator.PagesIndex;
+import com.facebook.presto.operator.RpcShuffleClientProvider;
 import com.facebook.presto.operator.TableCommitContext;
 import com.facebook.presto.operator.TaskMemoryReservationSummary;
+import com.facebook.presto.operator.ThriftShuffleClientProvider;
 import com.facebook.presto.operator.index.IndexJoinLookupStats;
 import com.facebook.presto.resourcemanager.ClusterMemoryManagerService;
 import com.facebook.presto.resourcemanager.ClusterQueryTrackerService;
@@ -135,16 +142,17 @@ import com.facebook.presto.resourcemanager.ResourceManagerConfig;
 import com.facebook.presto.resourcemanager.ResourceManagerInconsistentException;
 import com.facebook.presto.resourcemanager.ResourceManagerResourceGroupService;
 import com.facebook.presto.server.remotetask.HttpLocationFactory;
+import com.facebook.presto.server.remotetask.ReactorNettyHttpClientConfig;
 import com.facebook.presto.server.thrift.FixedAddressSelector;
+import com.facebook.presto.server.thrift.HandleThriftModule;
 import com.facebook.presto.server.thrift.ThriftServerInfoClient;
 import com.facebook.presto.server.thrift.ThriftServerInfoService;
 import com.facebook.presto.server.thrift.ThriftTaskClient;
 import com.facebook.presto.server.thrift.ThriftTaskService;
+import com.facebook.presto.server.thrift.ThriftTaskUpdateRequestBodyReader;
 import com.facebook.presto.sessionpropertyproviders.JavaWorkerSessionPropertyProvider;
 import com.facebook.presto.sessionpropertyproviders.NativeWorkerSessionPropertyProvider;
-import com.facebook.presto.spi.ConnectorMetadataUpdateHandle;
 import com.facebook.presto.spi.ConnectorSplit;
-import com.facebook.presto.spi.ConnectorTypeSerde;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PageSorter;
@@ -194,6 +202,7 @@ import com.facebook.presto.sql.analyzer.MetadataExtractor;
 import com.facebook.presto.sql.analyzer.MetadataExtractorMBean;
 import com.facebook.presto.sql.analyzer.QueryExplainer;
 import com.facebook.presto.sql.analyzer.QueryPreparerProviderManager;
+import com.facebook.presto.sql.expressions.ExpressionOptimizerManager;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.facebook.presto.sql.gen.JoinFilterFunctionCompiler;
@@ -211,6 +220,7 @@ import com.facebook.presto.sql.planner.PlanFragment;
 import com.facebook.presto.sql.planner.plan.JsonCodecSimplePlanFragmentSerde;
 import com.facebook.presto.sql.planner.sanity.PlanChecker;
 import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManager;
+import com.facebook.presto.sql.planner.sanity.PlanCheckerProviderManagerConfig;
 import com.facebook.presto.sql.relational.RowExpressionDeterminismEvaluator;
 import com.facebook.presto.sql.relational.RowExpressionDomainTranslator;
 import com.facebook.presto.sql.tree.Expression;
@@ -232,16 +242,12 @@ import com.google.inject.Key;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
-import com.google.inject.TypeLiteral;
 import com.google.inject.multibindings.MapBinder;
 import io.airlift.slice.Slice;
-import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Singleton;
-import javax.servlet.Filter;
-import javax.servlet.Servlet;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Singleton;
+import jakarta.servlet.Filter;
+import jakarta.servlet.Servlet;
 
 import java.util.List;
 import java.util.Optional;
@@ -261,6 +267,7 @@ import static com.facebook.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static com.facebook.airlift.json.JsonBinder.jsonBinder;
 import static com.facebook.airlift.json.JsonCodecBinder.jsonCodecBinder;
 import static com.facebook.airlift.json.smile.SmileCodecBinder.smileCodecBinder;
+import static com.facebook.airlift.units.DataSize.Unit.MEGABYTE;
 import static com.facebook.drift.client.ExceptionClassification.HostStatus.DOWN;
 import static com.facebook.drift.client.ExceptionClassification.HostStatus.NORMAL;
 import static com.facebook.drift.client.guice.DriftClientBinder.driftClientBinder;
@@ -275,7 +282,6 @@ import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator
 import static com.google.inject.multibindings.MapBinder.newMapBinder;
 import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
-import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newFixedThreadPool;
@@ -358,6 +364,9 @@ public class ServerMainModule
         binder.bind(SystemSessionProperties.class).in(Scopes.SINGLETON);
         binder.bind(SessionPropertyDefaults.class).in(Scopes.SINGLETON);
 
+        // expression manager
+        binder.bind(ExpressionOptimizerManager.class).in(Scopes.SINGLETON);
+
         // schema properties
         binder.bind(SchemaPropertyManager.class).in(Scopes.SINGLETON);
 
@@ -408,14 +417,21 @@ public class ServerMainModule
 
         // task execution
         jaxrsBinder(binder).bind(TaskResource.class);
+        jaxrsBinder(binder).bind(ThriftTaskUpdateRequestBodyReader.class);
+
         newExporter(binder).export(TaskResource.class).withGeneratedName();
         jaxrsBinder(binder).bind(TaskExecutorResource.class);
         newExporter(binder).export(TaskExecutorResource.class).withGeneratedName();
         binder.bind(TaskManagementExecutor.class).in(Scopes.SINGLETON);
 
         install(new DefaultThriftCodecsModule());
+        // handle resolve for thrift
+        binder.install(new HandleThriftModule());
+
         thriftCodecBinder(binder).bindCustomThriftCodec(SqlInvokedFunctionCodec.class);
         thriftCodecBinder(binder).bindCustomThriftCodec(SqlFunctionIdCodec.class);
+
+        binder.bind(ConnectorCodecManager.class).in(Scopes.SINGLETON);
 
         jsonCodecBinder(binder).bindListJsonCodec(TaskMemoryReservationSummary.class);
         binder.bind(SqlTaskManager.class).in(Scopes.SINGLETON);
@@ -528,6 +544,7 @@ public class ServerMainModule
         binder.bind(PageFunctionCompiler.class).in(Scopes.SINGLETON);
         newExporter(binder).export(PageFunctionCompiler.class).withGeneratedName();
         configBinder(binder).bindConfig(TaskManagerConfig.class);
+        configBinder(binder).bindConfig(ReactorNettyHttpClientConfig.class);
         binder.bind(IndexJoinLookupStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(IndexJoinLookupStats.class).withGeneratedName();
         binder.bind(AsyncHttpExecutionMBean.class).in(Scopes.SINGLETON);
@@ -556,7 +573,17 @@ public class ServerMainModule
         thriftCodecBinder(binder).bindThriftCodec(TaskInfo.class);
 
         // exchange client
+        binder.bind(RpcShuffleClientProvider.class)
+                .annotatedWith(ForExchange.class)
+                .to(HttpAndThriftRpcShuffleClientProvider.class);
+        binder.bind(HttpShuffleClientProvider.class)
+                .annotatedWith(ForExchange.class)
+                .to(HttpShuffleClientProvider.class);
+        binder.bind(ThriftShuffleClientProvider.class)
+                .annotatedWith(ForExchange.class)
+                .to(ThriftShuffleClientProvider.class);
         binder.bind(ExchangeClientSupplier.class).to(ExchangeClientFactory.class).in(Scopes.SINGLETON);
+
         httpClientBinder(binder).bindHttpClient("exchange", ForExchange.class)
                 .withTracing()
                 .withFilter(GenerateTraceTokenRequestFilter.class)
@@ -565,6 +592,7 @@ public class ServerMainModule
                     config.setMaxConnectionsPerServer(250);
                     config.setMaxContentLength(new DataSize(32, MEGABYTE));
                 });
+
         binder.install(new DriftNettyClientModule());
         driftClientBinder(binder).bindDriftClient(ThriftTaskClient.class, ForExchange.class)
                 .withAddressSelector(((addressSelectorBinder, annotation, prefix) ->
@@ -592,18 +620,6 @@ public class ServerMainModule
         binder.bind(PageSourceManager.class).in(Scopes.SINGLETON);
         binder.bind(PageSourceProvider.class).to(PageSourceManager.class).in(Scopes.SINGLETON);
 
-        // connector distributed metadata manager
-        binder.bind(ConnectorMetadataUpdaterManager.class).in(Scopes.SINGLETON);
-
-        // connector metadata update handle serde manager
-        binder.bind(ConnectorTypeSerdeManager.class).in(Scopes.SINGLETON);
-
-        // connector metadata update handle json serde
-        binder.bind(new TypeLiteral<ConnectorTypeSerde<ConnectorMetadataUpdateHandle>>() {})
-                .annotatedWith(ForJsonMetadataUpdateHandle.class)
-                .to(ConnectorMetadataUpdateHandleJsonSerde.class)
-                .in(Scopes.SINGLETON);
-
         // page sink provider
         binder.bind(PageSinkManager.class).in(Scopes.SINGLETON);
         binder.bind(PageSinkProvider.class).to(PageSinkManager.class).in(Scopes.SINGLETON);
@@ -613,6 +629,9 @@ public class ServerMainModule
         configBinder(binder).bindConfig(StaticCatalogStoreConfig.class);
         binder.bind(StaticFunctionNamespaceStore.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(StaticFunctionNamespaceStoreConfig.class);
+        binder.bind(StaticTypeManagerStore.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfig(StaticTypeManagerStoreConfig.class);
+        configBinder(binder).bindConfig(SessionPropertyProviderConfig.class);
         binder.bind(FunctionAndTypeManager.class).in(Scopes.SINGLETON);
         binder.bind(MetadataManager.class).in(Scopes.SINGLETON);
 
@@ -684,10 +703,7 @@ public class ServerMainModule
         jsonBinder(binder).addSerializerBinding(Expression.class).to(ExpressionSerializer.class);
         jsonBinder(binder).addDeserializerBinding(Expression.class).to(ExpressionDeserializer.class);
         jsonBinder(binder).addDeserializerBinding(FunctionCall.class).to(FunctionCallDeserializer.class);
-
-        // metadata updates
-        jsonCodecBinder(binder).bindJsonCodec(MetadataUpdates.class);
-        smileCodecBinder(binder).bindSmileCodec(MetadataUpdates.class);
+        thriftCodecBinder(binder).bindThriftCodec(TaskUpdateRequest.class);
 
         // split monitor
         binder.bind(SplitMonitor.class).in(Scopes.SINGLETON);
@@ -801,13 +817,24 @@ public class ServerMainModule
         binder.bind(NodeStatusNotificationManager.class).in(Scopes.SINGLETON);
 
         binder.bind(PlanCheckerProviderManager.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfig(PlanCheckerProviderManagerConfig.class);
 
         // Worker session property providers
         MapBinder<String, WorkerSessionPropertyProvider> mapBinder =
                 newMapBinder(binder, String.class, WorkerSessionPropertyProvider.class);
-        mapBinder.addBinding("java-worker").to(JavaWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
-        if (!serverConfig.isCoordinatorSidecarEnabled()) {
-            mapBinder.addBinding("native-worker").to(NativeWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
+        if (featuresConfig.isNativeExecutionEnabled()) {
+            if (!serverConfig.isCoordinatorSidecarEnabled()) {
+                mapBinder.addBinding("native-worker").to(NativeWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
+            }
+            if (!featuresConfig.isExcludeInvalidWorkerSessionProperties()) {
+                mapBinder.addBinding("java-worker").to(JavaWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
+            }
+        }
+        else {
+            mapBinder.addBinding("java-worker").to(JavaWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
+            if (!featuresConfig.isExcludeInvalidWorkerSessionProperties()) {
+                mapBinder.addBinding("native-worker").to(NativeWorkerSessionPropertyProvider.class).in(Scopes.SINGLETON);
+            }
         }
 
         // Node manager binding

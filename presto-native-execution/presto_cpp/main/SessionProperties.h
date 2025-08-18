@@ -82,6 +82,11 @@ class SessionProperties {
   static constexpr const char* kExprMaxArraySizeInReduce =
       "native_expression_max_array_size_in_reduce";
 
+  /// Controls maximum number of compiled regular expression patterns per
+  /// regular expression function instance per thread of execution.
+  static constexpr const char* kExprMaxCompiledRegexes =
+      "native_expression_max_compiled_regexes";
+
   /// The maximum memory used by partial aggregation when data reduction is not
   /// optimal.
   static constexpr const char* kMaxPartialAggregationMemory =
@@ -172,11 +177,43 @@ class SessionProperties {
   static constexpr const char* kDebugDisableExpressionWithLazyInputs =
       "native_debug_disable_expression_with_lazy_inputs";
 
+  /// Regex for filtering on memory pool name if not empty. This allows us to
+  /// only track the callsites of memory allocations for memory pools whose name
+  /// matches the specified regular expression. Empty string means no match for
+  /// all.
+  static constexpr const char* kDebugMemoryPoolNameRegex =
+      "native_debug_memory_pool_name_regex";
+
   /// Temporary flag to control whether selective Nimble reader should be used
   /// in this query or not.  Will be removed after the selective Nimble reader
   /// is fully rolled out.
   static constexpr const char* kSelectiveNimbleReaderEnabled =
       "native_selective_nimble_reader_enabled";
+
+  /// The max ratio of a query used memory to its max capacity, and the scale
+  /// writer exchange stops scaling writer processing if the query's current
+  /// memory usage exceeds this ratio. The value is in the range of (0, 1].
+  static constexpr const char* kScaleWriterRebalanceMaxMemoryUsageRatio =
+      "native_scaled_writer_rebalance_max_memory_usage_ratio";
+
+  /// The max number of logical table partitions that can be assigned to a
+  /// single table writer thread. The logical table partition is used by local
+  /// exchange writer for writer scaling, and multiple physical table
+  /// partitions can be mapped to the same logical table partition based on the
+  /// hash value of calculated partitioned ids.
+  static constexpr const char* kScaleWriterMaxPartitionsPerWriter =
+      "native_scaled_writer_max_partitions_per_writer";
+
+  /// Minimum amount of data processed by a logical table partition to trigger
+  /// writer scaling if it is detected as overloaded by scale writer exchange.
+  static constexpr const char*
+      kScaleWriterMinPartitionProcessedBytesRebalanceThreshold =
+          "native_scaled_writer_min_partition_processed_bytes_rebalance_threshold";
+
+  /// Minimum amount of data processed by all the logical table partitions to
+  /// trigger skewed partition rebalancing by scale writer exchange.
+  static constexpr const char* kScaleWriterMinProcessedBytesRebalanceThreshold =
+      "native_scaled_writer_min_processed_bytes_rebalance_threshold";
 
   /// Enable timezone-less timestamp conversions.
   static constexpr const char* kLegacyTimestamp = "legacy_timestamp";
@@ -193,19 +230,29 @@ class SessionProperties {
   /// Base dir of a query to store tracing data.
   static constexpr const char* kQueryTraceDir = "native_query_trace_dir";
 
-  /// A comma-separated list of plan node ids whose input data will be traced.
-  /// Empty string if only want to trace the query metadata.
-  static constexpr const char* kQueryTraceNodeIds =
-      "native_query_trace_node_ids";
+  /// The plan node id whose input data will be traced.
+  static constexpr const char* kQueryTraceNodeId =
+      "native_query_trace_node_id";
 
   /// The max trace bytes limit. Tracing is disabled if zero.
   static constexpr const char* kQueryTraceMaxBytes =
       "native_query_trace_max_bytes";
 
-  /// The regexp of traced task id. We only enable trace on a task if its id
-  /// matches.
-  static constexpr const char* kQueryTraceTaskRegExp =
-      "native_query_trace_task_reg_exp";
+  /// Config used to create operator trace directory. This config is provided to
+  /// underlying file system and the config is free form. The form should be
+  /// defined by the underlying file system.
+  static constexpr const char* kOpTraceDirectoryCreateConfig =
+      "native_op_trace_directory_create_config";
+
+  /// The fragment id of the traced task. Used to construct
+  /// the regular expression for matching
+  static constexpr const char* kQueryTraceFragmentId =
+      "native_query_trace_fragment_id";
+
+  /// The shard id of the traced task. Used to construct
+  /// the regular expression for matching
+  static constexpr const char* kQueryTraceShardId =
+      "native_query_trace_shard_id";
 
   /// The maximum size in bytes for the task's buffered output. The buffer is
   /// shared among all drivers.
@@ -225,20 +272,70 @@ class SessionProperties {
   static constexpr const char* kMaxLocalExchangePartitionCount =
       "native_max_local_exchange_partition_count";
 
+  /// Enable the prefix sort or fallback to std::sort in spill. The prefix sort
+  /// is faster than std::sort but requires the memory to build normalized
+  /// prefix keys, which might have potential risk of running out of server
+  /// memory.
+  static constexpr const char* kSpillPrefixSortEnabled =
+      "native_spill_prefixsort_enabled";
+
+  /// Maximum number of bytes to use for the normalized key in prefix-sort. Use
+  /// 0 to disable prefix-sort.
+  static constexpr const char* kPrefixSortNormalizedKeyMaxBytes =
+      "native_prefixsort_normalized_key_max_bytes";
+
+  /// Minimum number of rows to use prefix-sort. The default value (130) has
+  /// been derived using micro-benchmarking.
+  static constexpr const char* kPrefixSortMinRows =
+      "native_prefixsort_min_rows";
+
+  /// The compression algorithm type to compress the shuffle.
+  static constexpr const char* kShuffleCompressionCodec =
+      "exchange_compression_codec";
+
+  /// If set to true, enables scaled processing for table scans.
+  static constexpr const char* kTableScanScaledProcessingEnabled =
+      "native_table_scan_scaled_processing_enabled";
+
+  /// Controls the ratio of available memory that can be used for scaling up
+  /// table scans. The value is in the range of [0, 1].
+  static constexpr const char* kTableScanScaleUpMemoryUsageRatio =
+      "native_table_scan_scale_up_memory_usage_ratio";
+
+  /// In streaming aggregation, wait until we have enough number of output rows
+  /// to produce a batch of size specified by this. If set to 0, then
+  /// Operator::outputBatchRows will be used as the min output batch rows.
+  static constexpr const char* kStreamingAggregationMinOutputBatchRows =
+      "native_streaming_aggregation_min_output_batch_rows";
+
+  /// Maximum wait time for exchange long poll requests in seconds.
+  static constexpr const char* kRequestDataSizesMaxWaitSec =
+      "native_request_data_sizes_max_wait_sec";
+
+  /// Priority of memory pool reclaimer when deciding on memory pool to abort.
+  /// Lower value has higher priority and less likely to be chosen as candidate
+  /// for memory pool abort.
+  static constexpr const char* kNativeQueryMemoryReclaimerPriority =
+      "native_query_memory_reclaimer_priority";
+
+  /// Maximum number of splits to listen to by SplitListener on native workers.
+  static constexpr const char* kMaxNumSplitsListenedTo =
+      "native_max_num_splits_listened_to";
+
+  static SessionProperties* instance();
+
   SessionProperties();
-
-  const std::unordered_map<std::string, std::shared_ptr<SessionProperty>>&
-  getSessionProperties();
-
+  
   /// Utility function to translate a config name in Presto to its equivalent in
   /// Velox. Returns 'name' as is if there is no mapping.
-  const std::string toVeloxConfig(const std::string& name);
+  const std::string toVeloxConfig(const std::string& name) const;
 
-  void updateVeloxConfig(const std::string& name, const std::string& value);
+  json serialize() const;
 
-  json serialize();
+  const std::unordered_map<std::string, std::shared_ptr<SessionProperty>>&
+  testingSessionProperties() const;
 
- protected:
+ private:
   void addSessionProperty(
       const std::string& name,
       const std::string& description,

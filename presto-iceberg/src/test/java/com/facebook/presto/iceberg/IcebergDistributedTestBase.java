@@ -21,6 +21,9 @@ import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.common.transaction.TransactionId;
 import com.facebook.presto.common.type.FixedWidthType;
 import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeParameter;
+import com.facebook.presto.hive.BaseHiveColumnHandle;
 import com.facebook.presto.hive.HdfsConfiguration;
 import com.facebook.presto.hive.HdfsConfigurationInitializer;
 import com.facebook.presto.hive.HdfsContext;
@@ -29,6 +32,9 @@ import com.facebook.presto.hive.HiveClientConfig;
 import com.facebook.presto.hive.HiveHdfsConfiguration;
 import com.facebook.presto.hive.MetastoreClientConfig;
 import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
+import com.facebook.presto.hive.s3.HiveS3Config;
+import com.facebook.presto.hive.s3.PrestoS3ConfigurationUpdater;
+import com.facebook.presto.hive.s3.S3ConfigurationUpdater;
 import com.facebook.presto.iceberg.delete.DeleteFile;
 import com.facebook.presto.metadata.CatalogMetadata;
 import com.facebook.presto.metadata.Metadata;
@@ -39,8 +45,11 @@ import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.analyzer.MetadataResolver;
 import com.facebook.presto.spi.connector.classloader.ClassLoaderSafeConnectorMetadata;
+import com.facebook.presto.spi.plan.JoinNode;
 import com.facebook.presto.spi.security.AllowAllAccessControl;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
+import com.facebook.presto.spi.statistics.ConnectorHistogram;
+import com.facebook.presto.spi.statistics.DoubleRange;
 import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.testing.MaterializedResult;
@@ -54,9 +63,11 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import org.apache.commons.math3.distribution.NormalDistribution;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.BaseTable;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.FileScanTask;
@@ -80,6 +91,12 @@ import org.apache.iceberg.parquet.Parquet;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.TableScanUtil;
 import org.apache.parquet.column.ParquetProperties.WriterVersion;
+import org.apache.parquet.example.data.Group;
+import org.apache.parquet.hadoop.ParquetFileReader;
+import org.apache.parquet.hadoop.ParquetReader;
+import org.apache.parquet.hadoop.example.GroupReadSupport;
+import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.schema.MessageType;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
@@ -88,8 +105,8 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.net.URI;
 import java.nio.ByteBuffer;
-import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -97,20 +114,28 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.facebook.presto.SystemSessionProperties.LEGACY_TIMESTAMP;
+import static com.facebook.presto.SystemSessionProperties.OPTIMIZER_USE_HISTOGRAMS;
 import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
 import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.hive.BaseHiveColumnHandle.ColumnType.SYNTHESIZED;
@@ -120,12 +145,15 @@ import static com.facebook.presto.iceberg.FileContent.POSITION_DELETES;
 import static com.facebook.presto.iceberg.IcebergQueryRunner.ICEBERG_CATALOG;
 import static com.facebook.presto.iceberg.IcebergQueryRunner.getIcebergDataDirectoryPath;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.DELETE_AS_JOIN_REWRITE_ENABLED;
+import static com.facebook.presto.iceberg.IcebergSessionProperties.DELETE_AS_JOIN_REWRITE_MAX_DELETE_COLUMNS;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.PUSHDOWN_FILTER_ENABLED;
 import static com.facebook.presto.iceberg.IcebergSessionProperties.STATISTIC_SNAPSHOT_RECORD_DIFFERENCE_WEIGHT;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyNot;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.exchange;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.filter;
+import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.node;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.output;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
@@ -134,14 +162,20 @@ import static com.facebook.presto.testing.TestingAccessControlManager.privilege;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.facebook.presto.tests.sql.TestTable.randomTableSuffix;
+import static com.facebook.presto.type.DecimalParametricType.DECIMAL;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.lang.String.format;
+import static java.nio.file.Files.createTempDirectory;
 import static java.util.Objects.requireNonNull;
 import static java.util.UUID.randomUUID;
+import static java.util.function.Function.identity;
 import static org.apache.iceberg.SnapshotSummary.TOTAL_DATA_FILES_PROP;
 import static org.apache.iceberg.SnapshotSummary.TOTAL_DELETE_FILES_PROP;
 import static org.apache.parquet.column.ParquetProperties.WriterVersion.PARQUET_1_0;
 import static org.apache.parquet.column.ParquetProperties.WriterVersion.PARQUET_2_0;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
 @Test(singleThreaded = true)
@@ -149,8 +183,9 @@ public abstract class IcebergDistributedTestBase
         extends AbstractTestQueryFramework
 {
     private static final String METADATA_FILE_EXTENSION = ".metadata.json";
-    private final CatalogType catalogType;
-    private final Map<String, String> extraConnectorProperties;
+    protected final CatalogType catalogType;
+    protected final Map<String, String> extraConnectorProperties;
+    protected IcebergQueryRunner icebergQueryRunner;
 
     protected IcebergDistributedTestBase(CatalogType catalogType, Map<String, String> extraConnectorProperties)
     {
@@ -167,21 +202,25 @@ public abstract class IcebergDistributedTestBase
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return IcebergQueryRunner.createIcebergQueryRunner(ImmutableMap.of(), catalogType, extraConnectorProperties);
+        this.icebergQueryRunner = IcebergQueryRunner.builder()
+                .setCatalogType(catalogType)
+                .setExtraConnectorProperties(extraConnectorProperties)
+                .build();
+        return icebergQueryRunner.getQueryRunner();
     }
 
     @Test
     public void testDeleteOnV1Table()
     {
         // Test delete all rows
-        long totalCount = (long) getQueryRunner().execute("CREATE TABLE test_delete with (format_version = '1') as select * from lineitem")
+        long totalCount = (long) getQueryRunner().execute("CREATE TABLE test_delete with (\"format-version\" = '1') as select * from lineitem")
                 .getOnlyValue();
         assertUpdate("DELETE FROM test_delete", totalCount);
         assertEquals(getQueryRunner().execute("SELECT count(*) FROM test_delete").getOnlyValue(), 0L);
         assertQuerySucceeds("DROP TABLE test_delete");
 
         // Test delete whole partitions identified by one partition column
-        totalCount = (long) getQueryRunner().execute("CREATE TABLE test_partitioned_drop WITH (format_version = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem")
+        totalCount = (long) getQueryRunner().execute("CREATE TABLE test_partitioned_drop WITH (\"format-version\" = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem")
                 .getOnlyValue();
         long countPart1 = (long) getQueryRunner().execute("SELECT count(*) FROM test_partitioned_drop where linenumber = 1").getOnlyValue();
         assertUpdate("DELETE FROM test_partitioned_drop WHERE linenumber = 1", countPart1);
@@ -195,7 +234,7 @@ public abstract class IcebergDistributedTestBase
         assertQuerySucceeds("DROP TABLE test_partitioned_drop");
 
         // Test delete whole partitions identified by two partition columns
-        totalCount = (long) getQueryRunner().execute("CREATE TABLE test_partitioned_drop WITH (format_version = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem")
+        totalCount = (long) getQueryRunner().execute("CREATE TABLE test_partitioned_drop WITH (\"format-version\" = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem")
                 .getOnlyValue();
         long countPart1F = (long) getQueryRunner().execute("SELECT count(*) FROM test_partitioned_drop where linenumber = 1 and linestatus = 'F'").getOnlyValue();
         assertUpdate("DELETE FROM test_partitioned_drop WHERE linenumber = 1 and linestatus = 'F'", countPart1F);
@@ -213,7 +252,7 @@ public abstract class IcebergDistributedTestBase
 
         String errorMessage1 = "This connector only supports delete where one or more partitions are deleted entirely for table versions older than 2";
         // Do not support delete with filters on non-identity partition column on v1 table
-        assertUpdate("CREATE TABLE test_partitioned_drop WITH (format_version = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem", totalCount);
+        assertUpdate("CREATE TABLE test_partitioned_drop WITH (\"format-version\" = '1', partitioning = ARRAY['bucket(orderkey, 2)', 'linenumber', 'linestatus']) as select * from lineitem", totalCount);
         assertQueryFails("DELETE FROM test_partitioned_drop WHERE orderkey = 1", errorMessage1);
 
         // Do not allow delete data at specified snapshot
@@ -466,7 +505,7 @@ public abstract class IcebergDistributedTestBase
     {
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
         try {
-            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (format_version = '2', delete_mode = 'merge-on-read')");
+            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (\"format-version\" = '2', \"write.delete.mode\" = 'merge-on-read')");
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002'), (3, '1003')", 3);
 
             // execute row level deletion
@@ -547,7 +586,7 @@ public abstract class IcebergDistributedTestBase
     {
         try {
             // create iceberg table partitioned by column of TimestampType, and insert some data
-            assertQuerySucceeds(session, format("create table test_partition_columns(a bigint, b timestamp) with (partitioning = ARRAY['b'], format = '%s')", fileFormat.name()));
+            assertQuerySucceeds(session, format("create table test_partition_columns(a bigint, b timestamp) with (partitioning = ARRAY['b'], \"write.format.default\" = '%s')", fileFormat.name()));
             assertQuerySucceeds(session, "insert into test_partition_columns values(1, timestamp '1984-12-08 00:10:00'), (2, timestamp '2001-01-08 12:01:01')");
 
             // validate return data of TimestampType
@@ -580,6 +619,40 @@ public abstract class IcebergDistributedTestBase
         finally {
             assertQuerySucceeds(session, "drop table test_partition_columns");
         }
+    }
+
+    @Test
+    public void testCreateTableWithCustomLocation()
+            throws IOException
+    {
+        String tableName = "test_table_with_custom_location";
+        URI tableTargetURI = createTempDirectory(tableName).toUri();
+        try {
+            assertQuerySucceeds(format("create table %s (a int, b varchar)" +
+                    " with (location = '%s')", tableName, tableTargetURI.toString()));
+            assertUpdate(format("insert into %s values(1, '1001'), (2, '1002')", tableName), 2);
+            assertQuery("select * from " + tableName, "values(1, '1001'), (2, '1002')");
+            TableMetadata tableMetadata = ((BaseTable) loadTable(tableName)).operations().current();
+            assertEquals(URI.create(tableMetadata.location() + File.separator), tableTargetURI);
+        }
+        finally {
+            assertUpdate("drop table if exists " + tableName);
+        }
+    }
+
+    @Test
+    protected void testCreateTableAndValidateIcebergTableName()
+    {
+        String tableName = "test_create_table_for_validate_name";
+        Session session = getSession();
+        assertUpdate(session, format("CREATE TABLE %s (col1 INTEGER, aDate DATE)", tableName));
+        Table icebergTable = loadTable(tableName);
+
+        String catalog = session.getCatalog().get();
+        String schemaName = session.getSchema().get();
+        assertEquals(icebergTable.name(), catalog + "." + schemaName + "." + tableName);
+
+        assertUpdate("DROP TABLE IF EXISTS " + tableName);
     }
 
     @Test
@@ -675,7 +748,7 @@ public abstract class IcebergDistributedTestBase
             String comma = Strings.isNullOrEmpty(columns.trim()) ? "" : ", ";
 
             // The columns number of `test_stats_with_column_limits` for which metrics are collected is set to `columnCount`
-            assertUpdate("CREATE TABLE test_stats_with_column_limits (column_0 int, column_1 varchar, " + columns + comma + "column_10001 varchar) with(metrics_max_inferred_column = " + columnCount + ")");
+            assertUpdate("CREATE TABLE test_stats_with_column_limits (column_0 int, column_1 varchar, " + columns + comma + "column_10001 varchar) with(\"write.metadata.metrics.max-inferred-column-defaults\" = " + columnCount + ")");
             assertTrue(getQueryRunner().tableExists(getSession(), "test_stats_with_column_limits"));
             List<String> columnNames = IntStream.iterate(0, i -> i + 1).limit(columnCount)
                     .mapToObj(idx -> "column_" + idx).collect(Collectors.toList());
@@ -1006,6 +1079,11 @@ public abstract class IcebergDistributedTestBase
         return getTableStats(name, snapshot, getSession(), Optional.empty());
     }
 
+    private TableStatistics getTableStats(String name, Optional<Long> snapshot, Session session)
+    {
+        return getTableStats(name, snapshot, session, Optional.empty());
+    }
+
     private TableStatistics getTableStats(String name, Optional<Long> snapshot, Session session, Optional<List<String>> columns)
     {
         TransactionId transactionId = getQueryRunner().getTransactionManager().beginTransaction(false);
@@ -1018,12 +1096,15 @@ public abstract class IcebergDistributedTestBase
         String tableName = snapshot.map(snap -> format("%s@%d", name, snap)).orElse(name);
         String qualifiedName = format("%s.%s.%s", getSession().getCatalog().get(), getSession().getSchema().get(), tableName);
         TableHandle handle = resolver.getTableHandle(QualifiedObjectName.valueOf(qualifiedName)).get();
-        return metadata.getTableStatistics(metadataSession,
+        TableStatistics tableStatistics = metadata.getTableStatistics(metadataSession,
                 handle,
                 new ArrayList<>(columns
                         .map(columnSet -> Maps.filterKeys(resolver.getColumnHandles(handle), columnSet::contains))
-                        .orElse(resolver.getColumnHandles(handle)).values()),
+                        .orElseGet(() -> resolver.getColumnHandles(handle)).values()),
                 Constraint.alwaysTrue());
+
+        getQueryRunner().getTransactionManager().asyncAbort(transactionId);
+        return tableStatistics;
     }
 
     private static ColumnStatistics columnStatsFor(TableStatistics statistics, String name)
@@ -1046,7 +1127,7 @@ public abstract class IcebergDistributedTestBase
             throws Exception
     {
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
         String dataFilePath = (String) computeActual("SELECT file_path FROM \"" + tableName + "$files\" LIMIT 1").getOnlyValue();
 
@@ -1085,7 +1166,7 @@ public abstract class IcebergDistributedTestBase
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
         try {
-            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (format = '" + fileFormat + "', partitioning=ARRAY['a'])");
+            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (\"write.format.default\" = '" + fileFormat + "', partitioning=ARRAY['a'])");
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002'), (2, '1010'), (3, '1003')", 4);
 
             Table icebergTable = updateTable(tableName);
@@ -1124,7 +1205,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_equality_delete" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
+        assertUpdate(session, "CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
         Table icebergTable = updateTable(tableName);
 
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 1L));
@@ -1140,7 +1221,7 @@ public abstract class IcebergDistributedTestBase
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         // Specify equality delete filter with different column order from table definition
         String tableName = "test_v2_equality_delete_different_order" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
+        assertUpdate(session, "CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
         Table icebergTable = updateTable(tableName);
 
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 1L, "name", "ARGENTINA"));
@@ -1157,7 +1238,7 @@ public abstract class IcebergDistributedTestBase
         Session disable = deleteAsJoinEnabled(false);
         // Specify equality delete filter with different column order from table definition
         String tableName = "test_v2_equality_delete_different_order" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
+        assertUpdate(session, "CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation", 25);
         Table icebergTable = updateTable(tableName);
 
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 1L, "name", "ARGENTINA"));
@@ -1175,7 +1256,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
         String dataFilePath = (String) computeActual("SELECT file_path FROM \"" + tableName + "$files\" LIMIT 1").getOnlyValue();
 
@@ -1196,7 +1277,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_equality_delete" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " WITH (partitioning = ARRAY['nationkey'], format = '" + fileFormat + "') " + " AS SELECT * FROM tpch.tiny.nation", 25);
+        assertUpdate(session, "CREATE TABLE " + tableName + " WITH (partitioning = ARRAY['nationkey'], \"write.format.default\" = '" + fileFormat + "') " + " AS SELECT * FROM tpch.tiny.nation", 25);
         Table icebergTable = updateTable(tableName);
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 1L, "nationkey", 1L), ImmutableMap.of("nationkey", 1L));
         assertQuery(session, "SELECT * FROM " + tableName, "SELECT * FROM nation WHERE regionkey != 1 or nationkey != 1 ");
@@ -1209,7 +1290,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "', partitioning = ARRAY['nationkey']) AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "', partitioning = ARRAY['nationkey']) AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
 
         List<Long> partitions = Arrays.asList(1L, 2L, 3L, 17L, 24L);
@@ -1228,7 +1309,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "', partitioning = ARRAY['bucket(nationkey,100)']) AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "', partitioning = ARRAY['bucket(nationkey,100)']) AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
 
         PartitionTransforms.ColumnTransform columnTransform = PartitionTransforms.getColumnTransform(icebergTable.spec().fields().get(0), BIGINT);
@@ -1253,7 +1334,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
 
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 0L, "name", "ALGERIA"));
@@ -1269,7 +1350,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate("CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
 
         writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("regionkey", 1L));
@@ -1288,7 +1369,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate(session, "CREATE TABLE " + tableName + " with (format = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
+        assertUpdate(session, "CREATE TABLE " + tableName + " with (\"write.format.default\" = '" + fileFormat + "') AS SELECT * FROM tpch.tiny.nation order by nationkey", 25);
         Table icebergTable = updateTable(tableName);
         String dataFilePath = (String) computeActual("SELECT file_path FROM \"" + tableName + "$files\" LIMIT 1").getOnlyValue();
 
@@ -1319,7 +1400,7 @@ public abstract class IcebergDistributedTestBase
     {
         Session session = deleteAsJoinEnabled(joinRewriteEnabled);
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (format = '" + fileFormat + "')");
+        assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (\"write.format.default\" = '" + fileFormat + "')");
         assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002'), (3, '1003')", 3);
 
         Table icebergTable = updateTable(tableName);
@@ -1345,6 +1426,36 @@ public abstract class IcebergDistributedTestBase
                 ImmutableMap.of("c_bucket", partitionsBlock.getInt(0), "d_trunc", "th"));
         testCheckDeleteFiles(icebergTable, 3, ImmutableList.of(EQUALITY_DELETES, EQUALITY_DELETES, EQUALITY_DELETES));
         assertQuery(session, "SELECT * FROM " + tableName, "VALUES (1, '1001', NULL, NULL), (3, '1003', NULL, NULL), (6, '1004', 1, NULL), (6, '1006', 2, 'th002')");
+    }
+
+    @Test(dataProvider = "equalityDeleteOptions")
+    public void testEqualityDeletesWithDataSequenceNumber(String fileFormat, boolean joinRewriteEnabled)
+            throws Exception
+    {
+        Session session = deleteAsJoinEnabled(joinRewriteEnabled);
+        String tableName = "test_v2_row_delete_" + randomTableSuffix();
+        String tableName2 = "test_v2_row_delete_2_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, data varchar) WITH (\"write.format.default\" = '" + fileFormat + "')");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'a')", 1);
+
+        assertUpdate("CREATE TABLE " + tableName2 + "(id int, data varchar) WITH (\"write.format.default\" = '" + fileFormat + "')");
+        assertUpdate("INSERT INTO " + tableName2 + " VALUES (1, 'a')", 1);
+
+        Table icebergTable = updateTable(tableName);
+        writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("id", 1));
+
+        Table icebergTable2 = updateTable(tableName2);
+        writeEqualityDeleteToNationTable(icebergTable2, ImmutableMap.of("id", 1));
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'b'), (2, 'a'), (3, 'a')", 3);
+        assertUpdate("INSERT INTO " + tableName2 + " VALUES (1, 'b'), (2, 'a'), (3, 'a')", 3);
+
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES (1, 'b'), (2, 'a'), (3, 'a')");
+
+        assertQuery(session, "SELECT \"$data_sequence_number\", * FROM " + tableName, "VALUES (3, 1, 'b'), (3, 2, 'a'), (3, 3, 'a')");
+
+        assertQuery(session, "SELECT a.\"$data_sequence_number\", b.\"$data_sequence_number\" from " + tableName + " as a, " + tableName2 + " as b where a.id = b.id",
+                "VALUES (3, 3), (3, 3), (3, 3)");
     }
 
     @Test
@@ -1405,11 +1516,81 @@ public abstract class IcebergDistributedTestBase
     }
 
     @Test
+    public void testWithSortOrder()
+            throws IOException
+    {
+        String tableName = "test_create_sorted_table_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, emp_name varchar) WITH (sorted_by = ARRAY['id'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (5, 'EEEE'), (3, 'CCCC'), (1, 'AAAA'), (2, 'BBBB'), (4,'DDDD')", 5);
+        for (Object filePath : computeActual("SELECT file_path from \"" + tableName + "$files\"").getOnlyColumnAsSet()) {
+            assertTrue(isFileSorted(String.valueOf(filePath), "id", "ASC"));
+        }
+    }
+
+    @Test
+    public void testWithDescSortOrder()
+            throws IOException
+    {
+        String tableName = "test_create_sorted_table_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, emp_name varchar) WITH (sorted_by = ARRAY['id DESC'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (5, 'EEEE'), (3, 'CCCC'), (1, 'AAAA'), (2, 'BBBB'), (4,'DDDD')", 5);
+        for (Object filePath : computeActual("SELECT file_path from \"" + tableName + "$files\"").getOnlyColumnAsSet()) {
+            assertTrue(isFileSorted(String.valueOf(filePath), "id", "DESC"));
+        }
+    }
+
+    @Test
+    public void testWithoutSortOrder()
+            throws IOException
+    {
+        String tableName = "test_create_unsorted_table_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, emp_name varchar)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'EEEE'), (3, 'CCCC'), (5, 'AAAA'), (2, 'BBBB'), (4,'DDDD')", 5);
+        for (Object filePath : computeActual("SELECT file_path from \"" + tableName + "$files\"").getOnlyColumnAsSet()) {
+            assertFalse(isFileSorted(String.valueOf(filePath), "id", ""));
+        }
+    }
+
+    public boolean isFileSorted(String path, String sortColumnName, String sortOrder)
+            throws IOException
+    {
+        Path filePath = new Path(path);
+        Configuration configuration = getHdfsEnvironment().getConfiguration(new HdfsContext(SESSION), filePath);
+        try (ParquetReader<Group> reader = ParquetReader.builder(new GroupReadSupport(), new Path(path))
+                .withConf(configuration)
+                .build()) {
+            Group record;
+            ParquetMetadata readFooter = ParquetFileReader.readFooter(configuration, filePath);
+            MessageType schema = readFooter.getFileMetaData().getSchema();
+            Double previousValue = null;
+            while ((record = reader.read()) != null) {
+                for (int i = 0; i < record.getType().getFieldCount(); i++) {
+                    String columnName = schema.getFieldName(i);
+                    if (columnName.equals(sortColumnName)) {
+                        Double currentValue = Double.parseDouble(record.getValueToString(i, i));
+                        if (previousValue != null) {
+                            boolean valueNotSorted = ("ASC".equals(sortOrder) || "".equals(sortOrder))
+                                    ? currentValue.compareTo(previousValue) < 0
+                                    : currentValue.compareTo(previousValue) > 0;
+
+                            if (valueNotSorted) {
+                                return false;
+                            }
+                        }
+                        previousValue = currentValue;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    @Test
     public void testMetadataDeleteOnUnPartitionedTableWithDeleteFiles()
     {
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
         try {
-            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (format_version = '2', delete_mode = 'merge-on-read')");
+            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (\"format-version\" = '2', \"write.delete.mode\" = 'merge-on-read')");
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002'), (3, '1003')", 3);
 
             // execute row level deletion
@@ -1433,12 +1614,65 @@ public abstract class IcebergDistributedTestBase
         }
     }
 
+    @DataProvider(name = "validHistogramTypes")
+    public Object[][] validHistogramTypesDataProvider()
+    {
+        return new Object[][] {
+                // types not supported in Iceberg connector, but that histogram could support
+                // {TINYINT, new String[]{"1", "2", "10"}},
+                // {SMALLINT, new String[]{"1", "2", "10"}},
+                // {TIMESTAMP_WITH_TIME_ZONE, new String[]{"now() + interval '1' hour", "now() + interval '2' hour"}},
+                // iceberg stores microsecond precision but presto calculates on millisecond precision
+                // need a fix to properly convert for the optimizer.
+                // {TIMESTAMP, new String[] {"localtimestamp + interval '1' hour", "localtimestamp + interval '2' hour"}},
+                // {TIME, new String[] {"localtime", "localtime + interval '1' hour"}},
+                // supported types
+                {INTEGER, new String[] {"1", "5", "9"}},
+                {BIGINT, new String[] {"2", "4", "6"}},
+                {DOUBLE, new String[] {"1.0", "3.1", "4.6"}},
+                // short decimal
+                {DECIMAL.createType(ImmutableList.of(TypeParameter.of(2L), TypeParameter.of(1L))), new String[] {"0.0", "3.0", "4.0"}},
+                // long decimal
+                {DECIMAL.createType(ImmutableList.of(TypeParameter.of(38L), TypeParameter.of(1L))), new String[] {"0.0", "3.0", "4.0"}},
+                {DATE, new String[] {"date '2024-01-01'", "date '2024-03-30'", "date '2024-05-30'"}},
+                {REAL, new String[] {"1.0", "2.0", "3.0"}},
+        };
+    }
+
+    /**
+     * Verifies that the histogram is returned after ANALYZE for a variety of types
+     */
+    @Test(dataProvider = "validHistogramTypes")
+    public void testHistogramStorage(Type type, Object[] values)
+    {
+        try {
+            Session session = Session.builder(getSession())
+                    .setSystemProperty(OPTIMIZER_USE_HISTOGRAMS, "true")
+                    .build();
+            assertQuerySucceeds("DROP TABLE IF EXISTS create_histograms");
+            assertQuerySucceeds(String.format("CREATE TABLE create_histograms (c %s)", type.getDisplayName()));
+            assertQuerySucceeds(String.format("INSERT INTO create_histograms VALUES %s", Joiner.on(", ").join(values)));
+            assertQuerySucceeds(session, "ANALYZE create_histograms");
+            TableStatistics tableStatistics = getTableStats("create_histograms");
+            Map<String, IcebergColumnHandle> nameToHandle = tableStatistics.getColumnStatistics().keySet()
+                    .stream().map(IcebergColumnHandle.class::cast)
+                    .collect(Collectors.toMap(BaseHiveColumnHandle::getName, identity()));
+            assertNotNull(nameToHandle.get("c"));
+            IcebergColumnHandle handle = nameToHandle.get("c");
+            ColumnStatistics statistics = tableStatistics.getColumnStatistics().get(handle);
+            assertTrue(statistics.getHistogram().isPresent());
+        }
+        finally {
+            assertQuerySucceeds("DROP TABLE IF EXISTS create_histograms");
+        }
+    }
+
     @Test
     public void testMetadataDeleteOnPartitionedTableWithDeleteFiles()
     {
         String tableName = "test_v2_row_delete_" + randomTableSuffix();
         try {
-            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (format_version = '2', delete_mode = 'merge-on-read', partitioning = ARRAY['a'])");
+            assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar) WITH (\"format-version\" = '2', \"write.delete.mode\" = 'merge-on-read', partitioning = ARRAY['a'])");
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002'), (3, '1003')", 3);
 
             // execute row level deletion
@@ -1476,7 +1710,7 @@ public abstract class IcebergDistributedTestBase
         String tableName = "test_empty_partition_spec_table";
         try {
             // Create a table with no partition
-            assertUpdate("CREATE TABLE " + tableName + " (a INTEGER, b VARCHAR) WITH (format_version = '2', delete_mode = 'merge-on-read')");
+            assertUpdate("CREATE TABLE " + tableName + " (a INTEGER, b VARCHAR) WITH (\"format-version\" = '2', \"write.delete.mode\" = 'merge-on-read')");
 
             // Do not insert data, and evaluate the partition spec by adding a partition column `c`
             assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN c INTEGER WITH (partitioning = 'identity')");
@@ -1507,7 +1741,7 @@ public abstract class IcebergDistributedTestBase
         String tableName = "test_data_deleted_partition_spec_table";
         try {
             // Create a table with partition column `a`, and insert some data under this partition spec
-            assertUpdate("CREATE TABLE " + tableName + " (a INTEGER, b VARCHAR) WITH (format_version = '2', delete_mode = 'merge-on-read', partitioning = ARRAY['a'])");
+            assertUpdate("CREATE TABLE " + tableName + " (a INTEGER, b VARCHAR) WITH (\"format-version\" = '2', \"write.delete.mode\" = 'merge-on-read', partitioning = ARRAY['a'])");
             assertUpdate("INSERT INTO " + tableName + " VALUES (1, '1001'), (2, '1002')", 2);
 
             Table icebergTable = loadTable(tableName);
@@ -1556,7 +1790,7 @@ public abstract class IcebergDistributedTestBase
             // Create a table with setting properties that maintain only 1 previous metadata version in current metadata,
             //  and delete unuseful metadata files after each commit
             assertUpdate("CREATE TABLE " + settingTableName + " (a INTEGER, b VARCHAR)" +
-                    " WITH (metadata_previous_versions_max = 1, metadata_delete_after_commit = true)");
+                    " WITH (\"write.metadata.previous-versions-max\" = 1, \"write.metadata.delete-after-commit.enabled\" = true)");
 
             // Create a table with default table properties that maintain 100 previous metadata versions in current metadata,
             //  and do not automatically delete any metadata files
@@ -1584,14 +1818,14 @@ public abstract class IcebergDistributedTestBase
             // Table `test_table_with_default_setting_properties`'s current metadata record all 5 previous metadata files
             assertEquals(defaultTableMetadata.previousFiles().size(), 5);
 
-            FileSystem fileSystem = getHdfsEnvironment().getFileSystem(new HdfsContext(SESSION), new org.apache.hadoop.fs.Path(settingTable.location()));
+            FileSystem fileSystem = getHdfsEnvironment().getFileSystem(new HdfsContext(SESSION), new Path(settingTable.location()));
 
             // Table `test_table_with_setting_properties`'s all existing metadata files count is 2
-            FileStatus[] settingTableFiles = fileSystem.listStatus(new org.apache.hadoop.fs.Path(settingTable.location(), "metadata"), name -> name.getName().contains(METADATA_FILE_EXTENSION));
+            FileStatus[] settingTableFiles = fileSystem.listStatus(new Path(settingTable.location(), "metadata"), name -> name.getName().contains(METADATA_FILE_EXTENSION));
             assertEquals(settingTableFiles.length, 2);
 
             // Table `test_table_with_default_setting_properties`'s all existing metadata files count is 6
-            FileStatus[] defaultTableFiles = fileSystem.listStatus(new org.apache.hadoop.fs.Path(defaultTable.location(), "metadata"), name -> name.getName().contains(METADATA_FILE_EXTENSION));
+            FileStatus[] defaultTableFiles = fileSystem.listStatus(new Path(defaultTable.location(), "metadata"), name -> name.getName().contains(METADATA_FILE_EXTENSION));
             assertEquals(defaultTableFiles.length, 6);
         }
         finally {
@@ -1708,7 +1942,7 @@ public abstract class IcebergDistributedTestBase
                     "   c_array ARRAY(BIGINT), " +
                     "   c_map MAP(VARCHAR, INT), " +
                     "   c_row ROW(a INT, b VARCHAR) " +
-                    ") WITH (format = 'PARQUET')", tmpTableName));
+                    ") WITH (\"write.format.default\" = 'PARQUET')", tmpTableName));
 
             assertUpdate(format("" +
                     "INSERT INTO %s " +
@@ -1817,6 +2051,60 @@ public abstract class IcebergDistributedTestBase
         testDataSequenceNumberHiddenColumn();
     }
 
+    @Test
+    public void testDeletedHiddenColumn()
+    {
+        assertUpdate("DROP TABLE IF EXISTS test_deleted");
+        assertUpdate("CREATE TABLE test_deleted AS SELECT * FROM tpch.tiny.region WHERE regionkey=0", 1);
+        assertUpdate("INSERT INTO test_deleted SELECT * FROM tpch.tiny.region WHERE regionkey=1", 1);
+
+        assertQuery("SELECT \"$deleted\" FROM test_deleted", format("VALUES %s, %s", "false", "false"));
+
+        assertUpdate("DELETE FROM test_deleted WHERE regionkey=1", 1);
+        assertEquals(computeActual("SELECT * FROM test_deleted").getRowCount(), 1);
+        assertQuery("SELECT \"$deleted\" FROM test_deleted ORDER BY \"$deleted\"", format("VALUES %s, %s", "false", "true"));
+    }
+
+    @Test
+    public void testDeleteFilePathHiddenColumn()
+    {
+        assertUpdate("DROP TABLE IF EXISTS test_delete_file_path");
+        assertUpdate("CREATE TABLE test_delete_file_path AS SELECT * FROM tpch.tiny.region WHERE regionkey=0", 1);
+        assertUpdate("INSERT INTO test_delete_file_path SELECT * FROM tpch.tiny.region WHERE regionkey=1", 1);
+
+        assertQuery("SELECT \"$delete_file_path\" FROM test_delete_file_path", format("VALUES %s, %s", "NULL", "NULL"));
+
+        assertUpdate("DELETE FROM test_delete_file_path WHERE regionkey=1", 1);
+        assertEquals(computeActual("SELECT * FROM test_delete_file_path").getRowCount(), 1);
+        assertEquals(computeActual("SELECT \"$delete_file_path\" FROM test_delete_file_path").getRowCount(), 2);
+
+        assertUpdate("DELETE FROM test_delete_file_path WHERE regionkey=0", 1);
+        computeActual("SELECT \"$delete_file_path\" FROM test_delete_file_path").getMaterializedRows().forEach(row -> {
+            assertEquals(row.getFieldCount(), 1);
+            assertNotNull(row.getField(0));
+        });
+    }
+
+    @Test(dataProvider = "equalityDeleteOptions")
+    public void testEqualityDeletesWithDeletedHiddenColumn(String fileFormat, boolean joinRewriteEnabled)
+            throws Exception
+    {
+        Session session = deleteAsJoinEnabled(joinRewriteEnabled);
+        String tableName = "test_v2_row_delete_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, data varchar) WITH (\"write.format.default\" = '" + fileFormat + "')");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'a')", 1);
+
+        Table icebergTable = updateTable(tableName);
+        writeEqualityDeleteToNationTable(icebergTable, ImmutableMap.of("id", 1));
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'b'), (2, 'a'), (3, 'a')", 3);
+
+        assertQuery(session, "SELECT * FROM " + tableName, "VALUES (1, 'b'), (2, 'a'), (3, 'a')");
+
+        assertQuery(session, "SELECT \"$deleted\", * FROM " + tableName,
+                "VALUES (true, 1, 'a'), (false, 1, 'b'), (false, 2, 'a'), (false, 3, 'a')");
+    }
+
     @DataProvider(name = "pushdownFilterEnabled")
     public Object[][] pushdownFilterEnabledProvider()
     {
@@ -1866,8 +2154,10 @@ public abstract class IcebergDistributedTestBase
         assertQuerySucceeds("CREATE TABLE test_statistics_file_cache(i int)");
         assertUpdate("INSERT INTO test_statistics_file_cache VALUES 1, 2, 3, 4, 5", 5);
         assertQuerySucceeds("ANALYZE test_statistics_file_cache");
+
+        TransactionId transactionId = getQueryRunner().getTransactionManager().beginTransaction(false);
         Session session = Session.builder(getSession())
-                .setTransactionId(getQueryRunner().getTransactionManager().beginTransaction(false))
+                .setTransactionId(transactionId)
                 .build();
         Optional<TableHandle> handle = MetadataUtil.getOptionalTableHandle(session,
                 getQueryRunner().getTransactionManager(),
@@ -1887,6 +2177,8 @@ public abstract class IcebergDistributedTestBase
         getTableStats("test_statistics_file_cache", Optional.empty(), getSession(), Optional.of(ImmutableList.of("i")));
         assertEquals(metadata.statisticsFileCache.stats().minus(initial).missCount(), 1);
         assertEquals(metadata.statisticsFileCache.stats().minus(initial).hitCount(), 1);
+
+        getQueryRunner().getTransactionManager().asyncAbort(transactionId);
         getQueryRunner().execute("DROP TABLE test_statistics_file_cache");
     }
 
@@ -1978,6 +2270,278 @@ public abstract class IcebergDistributedTestBase
         assertQuerySucceeds("DROP TABLE time_batch_read");
     }
 
+    public void testAllNullHistogramColumn()
+    {
+        try {
+            Session session = Session.builder(getSession())
+                    .setSystemProperty(OPTIMIZER_USE_HISTOGRAMS, "true")
+                    .build();
+            assertQuerySucceeds("DROP TABLE IF EXISTS histogram_all_nulls");
+            assertQuerySucceeds("CREATE TABLE histogram_all_nulls (c bigint)");
+            TableStatistics stats = getTableStats("histogram_all_nulls", Optional.empty(), session);
+            assertFalse(stats.getColumnStatistics().values().stream().findFirst().isPresent());
+            assertUpdate("INSERT INTO histogram_all_nulls VALUES NULL, NULL, NULL, NULL, NULL", 5);
+            stats = getTableStats("histogram_all_nulls", Optional.empty(), session);
+            assertFalse(stats.getColumnStatistics().values().stream().findFirst()
+                    .get().getHistogram().isPresent());
+            assertQuerySucceeds(session, "ANALYZE histogram_all_nulls");
+            stats = getTableStats("histogram_all_nulls", Optional.empty(), session);
+            assertFalse(stats.getColumnStatistics().values().stream().findFirst()
+                    .get().getHistogram().isPresent());
+        }
+        finally {
+            assertQuerySucceeds("DROP TABLE IF EXISTS histogram_all_nulls");
+        }
+    }
+
+    @Test(dataProvider = "validHistogramTypes")
+    public void testHistogramShowStats(Type type, Object[] values)
+    {
+        try {
+            Session session = Session.builder(getSession())
+                    .setSystemProperty(OPTIMIZER_USE_HISTOGRAMS, "true")
+                    .build();
+            assertQuerySucceeds("DROP TABLE IF EXISTS create_histograms");
+            assertQuerySucceeds(String.format("CREATE TABLE show_histograms (c %s)", type.getDisplayName()));
+            assertQuerySucceeds(String.format("INSERT INTO show_histograms VALUES %s", Joiner.on(", ").join(values)));
+            assertQuerySucceeds(session, "ANALYZE show_histograms");
+            TableStatistics tableStatistics = getTableStats("show_histograms", Optional.empty(), session, Optional.empty());
+            Map<String, Optional<ConnectorHistogram>> histogramByColumnName = tableStatistics.getColumnStatistics()
+                    .entrySet()
+                    .stream()
+                    .collect(toImmutableMap(
+                            entry -> ((IcebergColumnHandle) entry.getKey()).getName(),
+                            entry -> entry.getValue().getHistogram()));
+            MaterializedResult stats = getQueryRunner().execute("SHOW STATS for show_histograms");
+            stats.getMaterializedRows()
+                    .forEach(row -> {
+                        String name = (String) row.getField(0);
+                        String histogram = (String) row.getField(7);
+                        assertEquals(Optional.ofNullable(histogramByColumnName.get(name))
+                                        .flatMap(identity())
+                                        .map(Objects::toString).orElse(null),
+                                histogram);
+                    });
+        }
+        finally {
+            assertQuerySucceeds("DROP TABLE IF EXISTS show_histograms");
+        }
+    }
+
+    /**
+     * Verifies that when the users opts-in to using histograms  that the
+     * optimizer estimates reflect the actual dataset for a variety of filter
+     * types (LTE, GT, EQ, NE) on a non-uniform data distribution
+     */
+    @Test
+    public void testHistogramsUsedInOptimization()
+    {
+        Session histogramSession = Session.builder(getSession())
+                .setSystemProperty(OPTIMIZER_USE_HISTOGRAMS, "true")
+                .build();
+        // standard-normal distribution should have vastly different estimates than uniform at the tails (e.g. -3, +3)
+        NormalDistribution dist = new NormalDistribution(0, 1);
+        double[] values = dist.sample(1000);
+        Arrays.sort(values);
+
+        try {
+            assertQuerySucceeds("DROP TABLE IF EXISTS histogram_validation");
+            assertQuerySucceeds("CREATE TABLE histogram_validation (c double)");
+            assertQuerySucceeds(String.format("INSERT INTO histogram_validation VALUES %s", Joiner.on(", ").join(Arrays.stream(values).iterator())));
+            assertQuerySucceeds(histogramSession, "ANALYZE histogram_validation");
+            Consumer<Double> assertFilters = (value) -> {
+                // use Math.abs because if the value isn't found, the returned value of binary
+                // search is (- insert index). The absolute value index tells us roughly how
+                // many records would have been returned regardless of if the actual value is in the
+                // dataset
+                double estimatedRowCount = Math.abs(Arrays.binarySearch(values, value));
+                assertPlan(histogramSession, "SELECT * FROM histogram_validation WHERE c <= " + value,
+                        output(anyTree(tableScan("histogram_validation"))).withApproximateOutputRowCount(estimatedRowCount, 25));
+                // check that inverse filter equals roughly the inverse number of rows
+                assertPlan(histogramSession, "SELECT * FROM histogram_validation WHERE c > " + value,
+                        output(anyTree(tableScan("histogram_validation"))).withApproximateOutputRowCount(Math.max(0.0, values.length - estimatedRowCount), 25));
+                // having an exact random double value from the distribution exist more than once is exceedingly rare.
+                // the histogram calculation should return 1 (and the inverse) in both situations
+                assertPlan(histogramSession, "SELECT * FROM histogram_validation WHERE c = " + value,
+                        output(anyTree(tableScan("histogram_validation"))).withApproximateOutputRowCount(1.0, 25));
+                assertPlan(histogramSession, "SELECT * FROM histogram_validation WHERE c != " + value,
+                        output(anyTree(tableScan("histogram_validation"))).withApproximateOutputRowCount(values.length - 1, 25));
+            };
+
+            assertFilters.accept(values[1]); // choose 1 greater than the min value
+            assertFilters.accept(-2.0); // should be very unlikely to generate a distribution where all values > -2.0
+            assertFilters.accept(-1.0);
+            assertFilters.accept(0.0);
+            assertFilters.accept(1.0);
+            assertFilters.accept(2.0); // should be very unlikely to generate a distribution where all values < 2.0
+            assertFilters.accept(values[values.length - 2]); // choose 1 less than the max value
+        }
+        finally {
+            assertQuerySucceeds("DROP TABLE IF EXISTS histogram_validation");
+        }
+    }
+
+    /**
+     * Verifies that the data in the histogram matches the mins/maxs of the values
+     * in the table when created
+     */
+    @Test(dataProvider = "validHistogramTypes")
+    public void testHistogramReconstruction(Type type, Object[] values)
+    {
+        try {
+            Session session = Session.builder(getSession())
+                    .setSystemProperty(OPTIMIZER_USE_HISTOGRAMS, "true")
+                    .build();
+            assertQuerySucceeds("DROP TABLE IF EXISTS verify_histograms");
+            assertQuerySucceeds(String.format("CREATE TABLE verify_histograms (c %s)", type.getDisplayName()));
+            assertQuerySucceeds(String.format("INSERT INTO verify_histograms VALUES %s", Joiner.on(", ").join(values)));
+            assertQuerySucceeds(session, "ANALYZE verify_histograms");
+            TableStatistics tableStatistics = getTableStats("verify_histograms", Optional.empty(), session, Optional.empty());
+            Map<String, IcebergColumnHandle> nameToHandle = tableStatistics.getColumnStatistics().keySet()
+                    .stream().map(IcebergColumnHandle.class::cast)
+                    .collect(Collectors.toMap(BaseHiveColumnHandle::getName, identity()));
+            assertNotNull(nameToHandle.get("c"));
+            IcebergColumnHandle handle = nameToHandle.get("c");
+            ColumnStatistics statistics = tableStatistics.getColumnStatistics().get(handle);
+            ConnectorHistogram histogram = statistics.getHistogram().get();
+            DoubleRange range = statistics.getRange().get();
+            double min = range.getMin();
+            double max = range.getMax();
+            assertEquals(histogram.inverseCumulativeProbability(0.0).getValue(), min);
+            assertEquals(histogram.inverseCumulativeProbability(1.0).getValue(), max);
+        }
+        finally {
+            assertQuerySucceeds("DROP TABLE IF EXISTS verify_histograms");
+        }
+    }
+
+    @Test
+    public void testInformationSchemaQueries()
+    {
+        assertQuerySucceeds("CREATE SCHEMA ICEBERG.TEST_SCHEMA1");
+        assertQuerySucceeds("CREATE SCHEMA ICEBERG.TEST_SCHEMA2");
+        assertQuerySucceeds("CREATE TABLE ICEBERG.TEST_SCHEMA1.ICEBERG_T1(i int)");
+        assertQuerySucceeds("CREATE TABLE ICEBERG.TEST_SCHEMA1.ICEBERG_T2(i int)");
+        assertQuerySucceeds("CREATE TABLE ICEBERG.TEST_SCHEMA2.ICEBERG_T3(i int)");
+        assertQuerySucceeds("CREATE TABLE ICEBERG.TEST_SCHEMA2.ICEBERG_T4(i int)");
+
+        assertQuery("SELECT table_name FROM iceberg.information_schema.tables WHERE table_schema ='test_schema1'", "VALUES 'iceberg_t1', 'iceberg_t2'");
+        assertQuery("SELECT table_name FROM iceberg.information_schema.tables WHERE table_schema ='test_schema2'", "VALUES 'iceberg_t3', 'iceberg_t4'");
+        //query on non-existing schema
+        assertQueryReturnsEmptyResult("SELECT table_name FROM iceberg.information_schema.tables WHERE table_schema = 'NON_EXISTING_SCHEMA'");
+        assertQueryReturnsEmptyResult("SELECT table_name FROM iceberg.information_schema.tables WHERE table_schema = 'non_existing_schema'");
+
+        assertQuerySucceeds("DROP TABLE ICEBERG.TEST_SCHEMA1.ICEBERG_T1");
+        assertQuerySucceeds("DROP TABLE ICEBERG.TEST_SCHEMA1.ICEBERG_T2");
+        assertQuerySucceeds("DROP TABLE ICEBERG.TEST_SCHEMA2.ICEBERG_T3");
+        assertQuerySucceeds("DROP TABLE ICEBERG.TEST_SCHEMA2.ICEBERG_T4");
+        assertQuerySucceeds("DROP SCHEMA ICEBERG.TEST_SCHEMA1");
+        assertQuerySucceeds("DROP SCHEMA ICEBERG.TEST_SCHEMA2");
+    }
+
+    @Test
+    public void testUpdateWithDuplicateValues()
+    {
+        String tableName = "test_update_duplicate_values_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, column1 varchar(10), column2 varchar(10), column3 int)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'a', 'a', 1), (2, 'b', 'b', 1), (3, 'c', 'c', 1)", 3);
+
+        // update single row with duplicate values
+        assertUpdate("UPDATE " + tableName + " SET column1 = CAST(1 as varchar), column2 = CAST(1 as varchar), column3 = 11 WHERE id = 1", 1);
+        assertQuery("SELECT id, column1, column2, column3 FROM " + tableName, "VALUES (1, '1', '1', 11), (2, 'b', 'b', 1), (3, 'c', 'c', 1)");
+    }
+
+    @Test
+    public void testUpdateWithPredicates()
+    {
+        String tableName = "test_update_predicates_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(id int, full_name varchar(20))");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'aaaa'), (2, 'bbbb'), (3, 'cccc')", 3);
+        // update single row on id
+        assertUpdate("UPDATE " + tableName + " SET full_name = 'aaaa AAAA' WHERE id = 1", 1);
+        assertQuery("SELECT id, full_name FROM " + tableName, "VALUES (1, 'aaaa AAAA'), (2, 'bbbb'), (3, 'cccc')");
+
+        // update single row with compound predicate
+        assertUpdate("UPDATE " + tableName + " SET full_name = 'aaaa' WHERE id = 1 and full_name='aaaa AAAA'", 1);
+        assertQuery("SELECT id, full_name FROM " + tableName, "VALUES (1, 'aaaa'), (2, 'bbbb'), (3, 'cccc')");
+
+        // update multiple rows at once
+        assertUpdate("UPDATE " + tableName + " SET full_name = 'ssss' WHERE id != 1 ", 2);
+        assertQuery("SELECT id, full_name FROM " + tableName, "VALUES (1, 'aaaa'), (2, 'ssss'), (3, 'ssss')");
+
+        // update with filter matching no rows
+        assertUpdate("UPDATE " + tableName + " SET full_name = 'ssss' WHERE id > 4 ", 0);
+        assertQuery("SELECT id, full_name FROM " + tableName, "VALUES (1, 'aaaa'), (2, 'ssss'), (3, 'ssss')");
+
+        // add column and update null values
+        assertUpdate("ALTER TABLE  " + tableName + " ADD  column email varchar");
+        assertQuery("SELECT id, full_name, email FROM " + tableName, "VALUES (1, 'aaaa', NULL), (2, 'ssss', NULL), (3, 'ssss', NULL)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (4, 'dddd', 'ddd@gmail.com')", 1);
+        assertUpdate("UPDATE " + tableName + " SET email = 'abc@gmail.com' WHERE id in(1, 2, 3)", 3);
+        assertQuery("SELECT id, full_name, email FROM " + tableName, "VALUES (1, 'aaaa', 'abc@gmail.com'), (2, 'ssss', 'abc@gmail.com'), (3, 'ssss', 'abc@gmail.com'), (4, 'dddd', 'ddd@gmail.com') ");
+
+        // set all values to null
+        assertUpdate("UPDATE " + tableName + " SET email = NULL", 4);
+        assertQuery("SELECT email FROM " + tableName + " WHERE email is NULL", "VALUES NULL, NULL, NULL, NULL");
+
+        // update nulls to non-null
+        assertUpdate("UPDATE " + tableName + " SET email = 'test@gmail.com' WHERE email is NULL", 4);
+        assertQuery("SELECT count(*) FROM " + tableName + " WHERE email is not NULL", "VALUES 4");
+    }
+
+    @Test
+    public void testUpdateAllValues()
+    {
+        String tableName = "test_update_all_values_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(a int, b int, c int)");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 2, 3), (11, 12, 13), (21, 22, 23)", 3);
+        assertUpdate("UPDATE " + tableName + " SET a = a + 1, b = b - 1, c = c * 2", 3);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (2, 1, 6), (12, 11, 26), (22, 21, 46)");
+
+        // update multiple columns with predicate
+        assertUpdate("UPDATE " + tableName + " SET a = a + 1, b = b - 1, c = c * 2 WHERE a = 2 AND b = 1", 1);
+        assertQuery("SELECT * FROM " + tableName, "VALUES (3, 0, 12), (12, 11, 26), (22, 21, 46)");
+    }
+
+    @Test
+    public void testUpdateRowType()
+    {
+        String tableName = "test_update_row_type" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(int_t INT, row_t ROW(f1 INT, f2 INT))");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, ROW(2, 3)), (11, ROW(12, 13)), (21, ROW(22, 23))", 3);
+        assertUpdate("UPDATE " + tableName + " SET int_t = int_t - 1 WHERE row_t.f2 = 3", 1);
+        assertQuery("SELECT int_t, row_t.f1, row_t.f2 FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 13), (21, 22, 23)");
+        assertUpdate("UPDATE " + tableName + " SET row_t = ROW(row_t.f1, row_t.f2 + 1) WHERE int_t = 11", 1);
+        assertQuery("SELECT int_t, row_t.f1, row_t.f2 FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 14), (21, 22, 23)");
+        assertUpdate("UPDATE " + tableName + " SET row_t = ROW(row_t.f1 * 2, row_t.f2) WHERE row_t.f1 = 22", 1);
+        assertQuery("SELECT int_t, row_t.f1, row_t.f2 FROM " + tableName, "VALUES (0, 2, 3), (11, 12, 14), (21, 44, 23)");
+    }
+
+    public void testUpdateOnPartitionTable()
+    {
+        String tableName = "test_update_partition_column_" + randomTableSuffix();
+        assertUpdate("CREATE TABLE " + tableName + "(a int, b varchar(10))" + "with(partitioning=ARRAY['a'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (1, 'first'), (1, 'second'), (2, 'third')", 3);
+        // update all rows on partition column
+        assertUpdate("UPDATE " + tableName + " SET a = a + 1", 3);
+        assertQuery("SELECT a, b FROM " + tableName, "VALUES (2,'first'), (2,'second'), (3,'third')");
+
+        assertUpdate("UPDATE " + tableName + " SET a = a + (CASE b WHEN 'first' THEN 1 ELSE 0 END)", 3);
+        assertQuery("SELECT a, b FROM " + tableName, "VALUES (3,'first'), (2,'second'), (3,'third')");
+
+        // update on partition column with predicate
+        assertUpdate("UPDATE " + tableName + " SET a = a + 1 WHERE b = 'second'", 1);
+        assertQuery("SELECT a, b FROM " + tableName, "VALUES (3,'first'), (3,'second'), (3,'third')");
+
+        // update non-partition column on a partitioned table without a predicate
+        assertUpdate("UPDATE " + tableName + " SET a = a + 1 WHERE b = 'second'", 1);
+        assertQuery("SELECT a, b FROM " + tableName, "VALUES (3,'first'), (4,'second'), (3,'third')");
+
+        // update non-partition column on a partitioned table with a predicate
+        assertUpdate("UPDATE " + tableName + " SET b = CONCAT(CAST(a as varchar), CASE a WHEN 1 THEN 'st' WHEN 2 THEN 'nd' WHEN 3 THEN 'rd' ELSE 'th' END) WHERE b = 'second'", 1);
+        assertQuery("SELECT a, b FROM " + tableName, "VALUES (3,'first'), (4,'4th'), (3,'third')");
+    }
+
     private void testCheckDeleteFiles(Table icebergTable, int expectedSize, List<FileContent> expectedFileContent)
     {
         // check delete file list
@@ -1998,12 +2562,12 @@ public abstract class IcebergDistributedTestBase
     private void writePositionDeleteToNationTable(Table icebergTable, String dataFilePath, long deletePos)
             throws IOException
     {
-        Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
+        java.nio.file.Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
         File metastoreDir = getIcebergDataDirectoryPath(dataDirectory, catalogType.name(), new IcebergConfig().getFileFormat(), false).toFile();
-        org.apache.hadoop.fs.Path metadataDir = new org.apache.hadoop.fs.Path(metastoreDir.toURI());
+        Path metadataDir = new Path(metastoreDir.toURI());
         String deleteFileName = "delete_file_" + randomUUID();
         FileSystem fs = getHdfsEnvironment().getFileSystem(new HdfsContext(SESSION), metadataDir);
-        org.apache.hadoop.fs.Path path = new org.apache.hadoop.fs.Path(metadataDir, deleteFileName);
+        Path path = new Path(metadataDir, deleteFileName);
         PositionDeleteWriter<Record> writer = Parquet.writeDeletes(HadoopOutputFile.fromPath(path, fs))
                 .createWriterFunc(GenericParquetWriter::buildWriter)
                 .forTable(icebergTable)
@@ -2030,13 +2594,13 @@ public abstract class IcebergDistributedTestBase
     private void writeEqualityDeleteToNationTable(Table icebergTable, Map<String, Object> overwriteValues, Map<String, Object> partitionValues)
             throws Exception
     {
-        Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
+        java.nio.file.Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
         File metastoreDir = getIcebergDataDirectoryPath(dataDirectory, catalogType.name(), new IcebergConfig().getFileFormat(), false).toFile();
-        org.apache.hadoop.fs.Path metadataDir = new org.apache.hadoop.fs.Path(metastoreDir.toURI());
+        Path metadataDir = new Path(metastoreDir.toURI());
         String deleteFileName = "delete_file_" + randomUUID();
         FileSystem fs = getHdfsEnvironment().getFileSystem(new HdfsContext(SESSION), metadataDir);
         Schema deleteRowSchema = icebergTable.schema().select(overwriteValues.keySet());
-        Parquet.DeleteWriteBuilder writerBuilder = Parquet.writeDeletes(HadoopOutputFile.fromPath(new org.apache.hadoop.fs.Path(metadataDir, deleteFileName), fs))
+        Parquet.DeleteWriteBuilder writerBuilder = Parquet.writeDeletes(HadoopOutputFile.fromPath(new Path(metadataDir, deleteFileName), fs))
                 .forTable(icebergTable)
                 .rowSchema(deleteRowSchema)
                 .createWriterFunc(GenericParquetWriter::buildWriter)
@@ -2057,13 +2621,19 @@ public abstract class IcebergDistributedTestBase
         icebergTable.newRowDelta().addDeletes(writer.toDeleteFile()).commit();
     }
 
-    public static HdfsEnvironment getHdfsEnvironment()
+    protected HdfsEnvironment getHdfsEnvironment()
     {
         HiveClientConfig hiveClientConfig = new HiveClientConfig();
         MetastoreClientConfig metastoreClientConfig = new MetastoreClientConfig();
-        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig),
-                ImmutableSet.of(),
-                hiveClientConfig);
+        HiveS3Config hiveS3Config = new HiveS3Config();
+        return getHdfsEnvironment(hiveClientConfig, metastoreClientConfig, hiveS3Config);
+    }
+
+    public static HdfsEnvironment getHdfsEnvironment(HiveClientConfig hiveClientConfig, MetastoreClientConfig metastoreClientConfig, HiveS3Config hiveS3Config)
+    {
+        S3ConfigurationUpdater s3ConfigurationUpdater = new PrestoS3ConfigurationUpdater(hiveS3Config);
+        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig, s3ConfigurationUpdater, ignored -> {}),
+                ImmutableSet.of(), hiveClientConfig);
         return new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
     }
 
@@ -2079,24 +2649,25 @@ public abstract class IcebergDistributedTestBase
 
     protected Table loadTable(String tableName)
     {
-        Catalog catalog = CatalogUtil.loadCatalog(catalogType.getCatalogImpl(), "test-hive", getProperties(), new Configuration());
+        tableName = normalizeIdentifier(tableName, ICEBERG_CATALOG);
+        Catalog catalog = CatalogUtil.loadCatalog(catalogType.getCatalogImpl(), ICEBERG_CATALOG, getProperties(), new Configuration());
         return catalog.loadTable(TableIdentifier.of("tpch", tableName));
     }
 
     protected Map<String, String> getProperties()
     {
-        File metastoreDir = getCatalogDirectory();
+        Path metastoreDir = getCatalogDirectory();
         return ImmutableMap.of("warehouse", metastoreDir.toString());
     }
 
-    protected File getCatalogDirectory()
+    protected Path getCatalogDirectory()
     {
-        Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
+        java.nio.file.Path dataDirectory = getDistributedQueryRunner().getCoordinator().getDataDirectory();
         switch (catalogType) {
             case HIVE:
             case HADOOP:
             case NESSIE:
-                return getIcebergDataDirectoryPath(dataDirectory, catalogType.name(), new IcebergConfig().getFileFormat(), false).toFile();
+                return new Path(getIcebergDataDirectoryPath(dataDirectory, catalogType.name(), new IcebergConfig().getFileFormat(), false).toFile().toURI());
         }
 
         throw new PrestoException(NOT_SUPPORTED, "Unsupported Presto Iceberg catalog type " + catalogType);
@@ -2130,5 +2701,371 @@ public abstract class IcebergDistributedTestBase
         Map<String, String> map = snapshot.summary();
         int totalDeleteFiles = Integer.valueOf(map.get(TOTAL_DELETE_FILES_PROP));
         assertEquals(totalDeleteFiles, deleteFilesCount);
+    }
+
+    @Test
+    public void testSortByAllTypes()
+    {
+        String tableName = "test_sort_by_all_types_" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (" +
+                "  a_boolean boolean, " +
+                "  an_integer integer, " +
+                "  a_bigint bigint, " +
+                "  a_real real, " +
+                "  a_double double, " +
+                "  a_short_decimal decimal(5,2), " +
+                "  a_long_decimal decimal(38,20), " +
+                "  a_varchar varchar, " +
+                "  a_varbinary varbinary, " +
+                "  a_date date, " +
+                "  a_timestamp timestamp, " +
+                "  an_array array(varchar), " +
+                "  a_map map(integer, varchar) " +
+                ") " +
+                "WITH (" +
+                "sorted_by = ARRAY[" +
+                "  'a_boolean', " +
+                "  'an_integer', " +
+                "  'a_bigint', " +
+                "  'a_real', " +
+                "  'a_double', " +
+                "  'a_short_decimal', " +
+                "  'a_long_decimal', " +
+                "  'a_varchar', " +
+                "  'a_varbinary', " +
+                "  'a_date', " +
+                "  'a_timestamp' " +
+                "  ]" +
+                ")");
+        String values = "(" +
+                "true, " +
+                "1, " +
+                "BIGINT '2', " +
+                "REAL '3.0', " +
+                "DOUBLE '4.0', " +
+                "DECIMAL '5.00', " +
+                "CAST(DECIMAL '6.00' AS decimal(38,20)), " +
+                "VARCHAR 'seven', " +
+                "X'88888888', " +
+                "DATE '2022-09-09', " +
+                "TIMESTAMP '2022-11-11 11:11:11.000000', " +
+                "ARRAY[VARCHAR 'four', 'teen'], " +
+                "MAP(ARRAY[15], ARRAY[VARCHAR 'fifteen']))";
+        String highValues = "(" +
+                "true, " +
+                "999999999, " +
+                "BIGINT '999999999', " +
+                "REAL '999.999', " +
+                "DOUBLE '999.999', " +
+                "DECIMAL '999.99', " +
+                "DECIMAL '6.00', " +
+                "'zzzzzzzzzzzzzz', " +
+                "X'FFFFFFFF', " +
+                "DATE '2099-12-31', " +
+                "TIMESTAMP '2099-12-31 23:59:59.000000', " +
+                "ARRAY['zzzz', 'zzzz'], " +
+                "MAP(ARRAY[999], ARRAY['zzzz']))";
+        String lowValues = "(" +
+                "false, " +
+                "0, " +
+                "BIGINT '0', " +
+                "REAL '0', " +
+                "DOUBLE '0', " +
+                "DECIMAL '0', " +
+                "DECIMAL '0', " +
+                "'', " +
+                "X'00000000', " +
+                "DATE '2000-01-01', " +
+                "TIMESTAMP '2000-01-01 00:00:00.000000', " +
+                "ARRAY['', ''], " +
+                "MAP(ARRAY[0], ARRAY['']))";
+
+        assertUpdate("INSERT INTO " + tableName + " VALUES " + values + ", " + highValues + ", " + lowValues, 3);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test
+    public void testEmptySortedByList()
+    {
+        String tableName = "test_empty_sorted_by_list_" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (a_boolean boolean, an_integer integer) " +
+                "  WITH (partitioning = ARRAY['an_integer'], sorted_by = ARRAY[])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (false, 3), (true, 1), (true, 5), (false, 6), (false, 2)", 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test(dataProvider = "sortedTableWithQuotedIdentifierCasing")
+    public void testCreateSortedTableWithQuotedIdentifierCasing(String columnName, String sortField)
+    {
+        String tableName = "test_create_sorted_table_with_quotes_" + randomTableSuffix();
+        assertUpdate(format("CREATE TABLE %s (%s bigint) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField));
+        assertUpdate(format("INSERT INTO " + tableName + " VALUES (1),(3),(2),(5),(4)"), 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test
+    public void testSortedByAscNullFirstOrder()
+    {
+        String tableName = "test_empty_sorted_by_asc_null_first_" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (id int, name varchar(20))" +
+                "  WITH ( sorted_by = ARRAY['id'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (11, 'ddd'), (20, 'ccc'), (null, 'vvv'), (3, 'aaa'), (5, 'eeee')", 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test
+    public void testSortedByAscNullLastOrder()
+    {
+        String tableName = "test_empty_sorted_by_asc_null_last_" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (id int, name varchar(20))" +
+                "  WITH ( sorted_by = ARRAY['id ASC NULLS LAST'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (11, 'ddd'), (20, 'ccc'), (null, 'vvv'), (3, 'aaa'), (5, 'eeee')", 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test
+    public void testSortedByDescNullFirstOrder()
+    {
+        String tableName = "test_empty_sorted_by_desc_null_first_" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (id int, name varchar(20))" +
+                "  WITH ( sorted_by = ARRAY['id DESC NULLS FIRST'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (11, 'ddd'), (20, 'ccc'), (null, 'vvv'), (3, 'aaa'), (5, 'eeee')", 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @Test
+    public void testSortedByDescNullLastOrder()
+    {
+        String tableName = "test_empty_sorted_by_desc_null_last" + randomTableSuffix();
+        assertUpdate("" +
+                "CREATE TABLE " + tableName + " (id int, name varchar(20))" +
+                "  WITH ( sorted_by = ARRAY['id DESC NULLS LAST'])");
+        assertUpdate("INSERT INTO " + tableName + " VALUES (11, 'ddd'), (20, 'ccc'), (null, 'vvv'), (3, 'aaa'), (5, 'eeee')", 5);
+        dropTable(getSession(), tableName);
+    }
+
+    @DataProvider(name = "sortedTableWithQuotedIdentifierCasing")
+    public static Object[][] sortedTableWithQuotedIdentifierCasing()
+    {
+        return new Object[][] {
+                {"col", "col"},
+                {"\"col\"", "col"},
+                {"col", "\"col\""},
+                {"\"col\"", "\"col\""},
+        };
+    }
+
+    @Test(dataProvider = "sortedTableWithSortTransform")
+    public void testCreateSortedTableWithSortTransform(String columnName, String sortField)
+    {
+        String tableName = "test_sort_with_transform_" + randomTableSuffix();
+        String query = format("CREATE TABLE %s (%s TIMESTAMP) WITH (sorted_by = ARRAY['%s'])", tableName, columnName, sortField);
+        assertQueryFails(query, Pattern.quote(format("Unable to parse sort field: [%s]", sortField)));
+    }
+
+    public void testStatisticsFileCacheInvalidationProcedure()
+    {
+        assertQuerySucceeds("CREATE TABLE test_statistics_file_cache_procedure(i int)");
+        assertUpdate("INSERT INTO test_statistics_file_cache_procedure VALUES 1, 2, 3, 4, 5", 5);
+        assertQuerySucceeds("ANALYZE test_statistics_file_cache_procedure");
+        for (int i = 0; i < 3; i++) {
+            assertQuerySucceeds("SHOW STATS FOR test_statistics_file_cache_procedure");
+        }
+
+        String jmxMetricsQuery = format("SELECT sum(\"cachestats.hitcount\"), sum(\"cachestats.size\"), sum(\"cachestats.misscount\") " +
+                "from jmx.current.\"com.facebook.presto.iceberg.statistics:name=%s,type=statisticsfilecache\"", getSession().getCatalog().get());
+
+        MaterializedResult result = computeActual(jmxMetricsQuery);
+        long afterHitCount = (long) result.getMaterializedRows().get(0).getField(0);
+        long afterCacheSize = (long) result.getMaterializedRows().get(0).getField(1);
+        long afterMissCount = (long) result.getMaterializedRows().get(0).getField(2);
+        assertTrue(afterHitCount > 0);
+        assertTrue(afterCacheSize > 0);
+
+        //test invalidate_statistics_file_cache procedure
+        assertQuerySucceeds(format("CALL %s.system.invalidate_statistics_file_cache()", getSession().getCatalog().get()));
+        MaterializedResult resultAfterProcedure = computeActual(jmxMetricsQuery);
+        long afterProcedureCacheSize = (long) resultAfterProcedure.getMaterializedRows().get(0).getField(1);
+        assertTrue(afterProcedureCacheSize == 0);
+
+        assertQuerySucceeds("SHOW STATS FOR test_statistics_file_cache_procedure");
+
+        MaterializedResult resultAfter = computeActual(jmxMetricsQuery);
+        long newCacheSize = (long) resultAfter.getMaterializedRows().get(0).getField(1);
+        long newMissCount = (long) resultAfter.getMaterializedRows().get(0).getField(2);
+        assertTrue(newCacheSize > 0);
+        assertTrue(afterMissCount < newMissCount);
+
+        getQueryRunner().execute("DROP TABLE test_statistics_file_cache_procedure");
+    }
+
+    @DataProvider(name = "sortedTableWithSortTransform")
+    public static Object[][] sortedTableWithSortTransform()
+    {
+        return new Object[][] {
+                {"col", "bucket(col, 3)"},
+                {"col", "bucket(\"col\", 3)"},
+                {"col", "truncate(col, 3)"},
+                {"col", "year(col)"},
+                {"col", "month(col)"},
+                {"col", "date(col)"},
+                {"col", "hour(col)"},
+        };
+    }
+
+    protected void dropTable(Session session, String table)
+    {
+        assertUpdate(session, "DROP TABLE " + table);
+        assertFalse(getQueryRunner().tableExists(session, table));
+    }
+
+    @Test
+    public void testEqualityDeleteAsJoinWithMaximumFieldsLimitUnderLimit()
+            throws Exception
+    {
+        int maxColumns = 10;
+        String tableName = "test_eq_delete_under_max_cols_" + randomTableSuffix();
+
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty(ICEBERG_CATALOG, DELETE_AS_JOIN_REWRITE_ENABLED, "true")
+                // Make sure the max columns is set to one more than the number of columns in the table
+                .setCatalogSessionProperty(ICEBERG_CATALOG, DELETE_AS_JOIN_REWRITE_MAX_DELETE_COLUMNS, "" + (maxColumns + 1))
+                .build();
+
+        try {
+            // Test with exactly max columns - should work fine
+            // Create table with specified number of columns
+            List<String> columnDefinitions = IntStream.range(0, maxColumns)
+                    .mapToObj(i -> "col_" + i + " varchar")
+                    .collect(Collectors.toList());
+            columnDefinitions.add(0, "id bigint");
+
+            String createTableSql = "CREATE TABLE " + tableName + " (" +
+                    String.join(", ", columnDefinitions) + ")";
+            assertUpdate(session, createTableSql);
+
+            // Insert test rows
+            for (int row = 1; row <= 3; row++) {
+                final int currentRow = row;
+                List<String> values = IntStream.range(0, maxColumns)
+                        .mapToObj(i -> "'val_" + currentRow + "_" + i + "'")
+                        .collect(Collectors.toList());
+                values.add(0, String.valueOf(currentRow));
+
+                String insertSql = "INSERT INTO " + tableName + " VALUES (" +
+                        String.join(", ", values) + ")";
+                assertUpdate(session, insertSql, 1);
+            }
+
+            // Verify all rows exist
+            assertQuery(session, "SELECT count(*) FROM " + tableName, "VALUES (3)");
+
+            // Update table to format version 2 and create equality delete files
+            Table icebergTable = updateTable(tableName);
+
+            // Create equality delete using ALL columns
+            Map<String, Object> deleteRow = new HashMap<>();
+            deleteRow.put("id", 2L);
+            for (int i = 0; i < maxColumns; i++) {
+                deleteRow.put("col_" + i, "val_2_" + i);
+            }
+
+            // Write equality delete with ALL columns
+            writeEqualityDeleteToNationTable(icebergTable, deleteRow);
+
+            // Query should work correctly regardless of optimization
+            assertQuery(session, "SELECT count(*) FROM " + tableName, "VALUES (2)");
+            assertQuery(session, "SELECT id FROM " + tableName + " ORDER BY id", "VALUES (1), (3)");
+
+            // With <= max columns, query plan should use JOIN (optimization enabled)
+            assertPlan(session, "SELECT * FROM " + tableName,
+                    anyTree(
+                        node(JoinNode.class,
+                            anyTree(tableScan(tableName)),
+                            anyTree(tableScan(tableName)))));
+        }
+        finally {
+            dropTable(session, tableName);
+        }
+    }
+
+    @Test
+    public void testEqualityDeleteAsJoinWithMaximumFieldsLimitOverLimit()
+            throws Exception
+    {
+        int maxColumns = 10;
+        String tableName = "test_eq_delete_max_cols_" + randomTableSuffix();
+
+        Session session = Session.builder(getQueryRunner().getDefaultSession())
+                .setCatalogSessionProperty(ICEBERG_CATALOG, DELETE_AS_JOIN_REWRITE_ENABLED, "true")
+                .setCatalogSessionProperty(ICEBERG_CATALOG, DELETE_AS_JOIN_REWRITE_MAX_DELETE_COLUMNS, "" + maxColumns)
+                .build();
+
+        try {
+            // Test with max columns - optimization should be disabled to prevent stack overflow
+            // Create table with specified number of columns
+            List<String> columnDefinitions = IntStream.range(0, maxColumns)
+                    .mapToObj(i -> "col_" + i + " varchar")
+                    .collect(Collectors.toList());
+            columnDefinitions.add(0, "id bigint");
+
+            String createTableSql = "CREATE TABLE " + tableName + " (" +
+                    String.join(", ", columnDefinitions) + ")";
+            assertUpdate(session, createTableSql);
+
+            // Insert test rows
+            for (int row = 1; row <= 3; row++) {
+                final int currentRow = row;
+                List<String> values = IntStream.range(0, maxColumns)
+                        .mapToObj(i -> "'val_" + currentRow + "_" + i + "'")
+                        .collect(Collectors.toList());
+                values.add(0, String.valueOf(currentRow));
+
+                String insertSql = "INSERT INTO " + tableName + " VALUES (" +
+                        String.join(", ", values) + ")";
+                assertUpdate(session, insertSql, 1);
+            }
+
+            // Verify all rows exist
+            assertQuery(session, "SELECT count(*) FROM " + tableName, "VALUES (3)");
+
+            // Update table to format version 2 and create equality delete files
+            Table icebergTable = updateTable(tableName);
+
+            // Create equality delete using ALL columns
+            Map<String, Object> deleteRow = new HashMap<>();
+            deleteRow.put("id", 2L);
+            for (int i = 0; i < maxColumns; i++) {
+                deleteRow.put("col_" + i, "val_2_" + i);
+            }
+
+            // Write equality delete with ALL columns
+            writeEqualityDeleteToNationTable(icebergTable, deleteRow);
+
+            // Query should work correctly regardless of optimization
+            assertQuery(session, "SELECT count(*) FROM " + tableName, "VALUES (2)");
+            assertQuery(session, "SELECT id FROM " + tableName + " ORDER BY id", "VALUES (1), (3)");
+
+            // With > max columns, optimization is disabled - no JOIN in plan
+            // Verify the query works but doesn't contain a join node
+            assertQuery(session, "SELECT * FROM " + tableName + " WHERE id = 1",
+                    "VALUES (" + Stream.concat(Stream.of("1"),
+                            IntStream.range(0, maxColumns).mapToObj(i -> "'val_1_" + i + "'"))
+                            .collect(Collectors.joining(", ")) + ")");
+
+            // To verify no join is present, we can check that the plan only contains table scan
+            assertPlan(session, "SELECT * FROM " + tableName,
+                    anyTree(
+                            anyNot(JoinNode.class,
+                                    tableScan(tableName))));
+        }
+        finally {
+            dropTable(session, tableName);
+        }
     }
 }

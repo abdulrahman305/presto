@@ -16,6 +16,9 @@ package com.facebook.presto.server;
 import com.facebook.airlift.concurrent.BoundedExecutor;
 import com.facebook.airlift.configuration.AbstractConfigurationAwareModule;
 import com.facebook.airlift.discovery.server.EmbeddedDiscoveryModule;
+import com.facebook.airlift.http.client.HttpClient;
+import com.facebook.airlift.http.server.HttpServerBinder.HttpResourceBinding;
+import com.facebook.airlift.units.Duration;
 import com.facebook.presto.client.QueryResults;
 import com.facebook.presto.cost.CostCalculator;
 import com.facebook.presto.cost.CostCalculator.EstimatedExchanges;
@@ -82,6 +85,8 @@ import com.facebook.presto.server.protocol.QueryBlockingRateLimiter;
 import com.facebook.presto.server.protocol.QueuedStatementResource;
 import com.facebook.presto.server.protocol.RetryCircuitBreaker;
 import com.facebook.presto.server.remotetask.HttpRemoteTaskFactory;
+import com.facebook.presto.server.remotetask.ReactorNettyHttpClient;
+import com.facebook.presto.server.remotetask.ReactorNettyHttpClientConfig;
 import com.facebook.presto.server.remotetask.RemoteTaskStats;
 import com.facebook.presto.spi.memory.ClusterMemoryPoolManager;
 import com.facebook.presto.spi.security.SelectedRole;
@@ -95,15 +100,14 @@ import com.facebook.presto.transaction.TransactionManager;
 import com.facebook.presto.transaction.TransactionManagerConfig;
 import com.facebook.presto.util.PrestoDataDefBindingHelper;
 import com.google.common.collect.ImmutableList;
+import com.google.common.net.HttpHeaders;
 import com.google.inject.Binder;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.MapBinder;
-import io.airlift.units.Duration;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
-import javax.inject.Singleton;
+import jakarta.annotation.PreDestroy;
+import jakarta.inject.Inject;
+import jakarta.inject.Singleton;
 
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -138,11 +142,23 @@ import static org.weakref.jmx.guice.ExportBinder.newExporter;
 public class CoordinatorModule
         extends AbstractConfigurationAwareModule
 {
+    private static final String DEFAULT_WEBUI_CSP =
+            "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+                    "font-src 'self' https://fonts.gstatic.com; frame-ancestors 'self'; img-src http: https: data:";
+
+    public static HttpResourceBinding webUIBinder(Binder binder, String path, String classPathResourceBase)
+    {
+        return httpServerBinder(binder).bindResource(path, classPathResourceBase)
+                .withExtraHeader(HttpHeaders.X_CONTENT_TYPE_OPTIONS, "nosniff")
+                .withExtraHeader(HttpHeaders.CONTENT_SECURITY_POLICY, DEFAULT_WEBUI_CSP);
+    }
+
     @Override
     protected void setup(Binder binder)
     {
-        httpServerBinder(binder).bindResource("/ui", "webapp").withWelcomeFile("index.html");
-        httpServerBinder(binder).bindResource("/tableau", "webapp/tableau");
+        webUIBinder(binder, "/ui/dev", "webapp/dev").withWelcomeFile("index.html");
+        webUIBinder(binder, "/ui", "webapp").withWelcomeFile("index.html");
+        webUIBinder(binder, "/tableau", "webapp/tableau");
 
         // discovery server
         install(installModuleIf(EmbeddedDiscoveryConfig.class, EmbeddedDiscoveryConfig::isEnabled, new EmbeddedDiscoveryModule()));
@@ -254,13 +270,20 @@ public class CoordinatorModule
         binder.bind(RemoteTaskStats.class).in(Scopes.SINGLETON);
         newExporter(binder).export(RemoteTaskStats.class).withGeneratedName();
 
-        httpClientBinder(binder).bindHttpClient("scheduler", ForScheduler.class)
-                .withTracing()
-                .withFilter(GenerateTraceTokenRequestFilter.class)
-                .withConfigDefaults(config -> {
-                    config.setRequestTimeout(new Duration(10, SECONDS));
-                    config.setMaxConnectionsPerServer(250);
-                });
+        ReactorNettyHttpClientConfig reactorNettyHttpClientConfig = buildConfigObject(ReactorNettyHttpClientConfig.class);
+        if (reactorNettyHttpClientConfig.isReactorNettyHttpClientEnabled()) {
+            binder.bind(ReactorNettyHttpClient.class).in(Scopes.SINGLETON);
+            binder.bind(HttpClient.class).annotatedWith(ForScheduler.class).to(ReactorNettyHttpClient.class);
+        }
+        else {
+            httpClientBinder(binder).bindHttpClient("scheduler", ForScheduler.class)
+                    .withTracing()
+                    .withFilter(GenerateTraceTokenRequestFilter.class)
+                    .withConfigDefaults(config -> {
+                        config.setRequestTimeout(new Duration(10, SECONDS));
+                        config.setMaxConnectionsPerServer(250);
+                    });
+        }
 
         binder.bind(ScheduledExecutorService.class).annotatedWith(ForScheduler.class)
                 .toInstance(newSingleThreadScheduledExecutor(threadsNamed("stage-scheduler")));

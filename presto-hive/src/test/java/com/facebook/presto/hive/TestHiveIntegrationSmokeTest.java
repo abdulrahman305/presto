@@ -32,6 +32,7 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.TableMetadata;
 import com.facebook.presto.spi.plan.MarkDistinctNode;
+import com.facebook.presto.spi.plan.WindowNode;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.security.SelectedRole;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.PartialMergePushdownStrategy;
@@ -40,7 +41,6 @@ import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import com.facebook.presto.sql.planner.plan.RowNumberNode;
 import com.facebook.presto.sql.planner.plan.TableWriterMergeNode;
 import com.facebook.presto.sql.planner.plan.TopNRowNumberNode;
-import com.facebook.presto.sql.planner.plan.WindowNode;
 import com.facebook.presto.sql.planner.planPrinter.IOPlanPrinter.ColumnConstraint;
 import com.facebook.presto.sql.planner.planPrinter.IOPlanPrinter.FormattedDomain;
 import com.facebook.presto.sql.planner.planPrinter.IOPlanPrinter.FormattedMarker;
@@ -68,9 +68,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -142,6 +140,8 @@ import static com.facebook.presto.sql.planner.optimizations.PlanNodeSearcher.sea
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE_MATERIALIZED;
 import static com.facebook.presto.sql.planner.planPrinter.PlanPrinter.textLogicalPlan;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
+import static com.facebook.presto.testing.TestingAccessControlManager.TestingPrivilegeType.SELECT_COLUMN;
+import static com.facebook.presto.testing.TestingAccessControlManager.privilege;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.facebook.presto.tests.QueryAssertions.assertEqualsIgnoreOrder;
@@ -476,7 +476,7 @@ public class TestHiveIntegrationSmokeTest
         assertEquals(tableMetadata.getMetadata().getProperties().get(PARTITIONED_BY_PROPERTY), partitionedBy);
         for (ColumnMetadata columnMetadata : tableMetadata.getColumns()) {
             boolean partitionKey = partitionedBy.contains(columnMetadata.getName());
-            assertEquals(columnMetadata.getExtraInfo(), columnExtraInfo(partitionKey));
+            assertEquals(columnMetadata.getExtraInfo().orElse(null), columnExtraInfo(partitionKey));
         }
 
         assertColumnType(tableMetadata, "_string", createUnboundedVarcharType());
@@ -2296,6 +2296,7 @@ public class TestHiveIntegrationSmokeTest
     {
         Session session = getSession();
         QueryRunner queryRunner = getQueryRunner();
+
         queryRunner.execute("CREATE TABLE orders_bucketed WITH (bucket_count = 11, bucketed_by = ARRAY['orderkey']) AS " +
                 "SELECT * FROM orders");
 
@@ -2381,23 +2382,23 @@ public class TestHiveIntegrationSmokeTest
                     session,
                     "CREATE TABLE create_partitioned_sorted_table (orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus)\n" +
                             "WITH (partitioned_by = ARRAY['orderstatus'], bucketed_by = ARRAY['custkey'], bucket_count = 11, sorted_by = ARRAY['orderkey']) AS\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM create_partitioned_sorted_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
 
             assertUpdate(
                     session,
                     "CREATE TABLE create_unpartitioned_sorted_table (orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus)\n" +
                             "WITH (bucketed_by = ARRAY['custkey'], bucket_count = 11, sorted_by = ARRAY['orderkey']) AS\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM create_unpartitioned_sorted_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
 
             // insert
             assertUpdate(
@@ -2408,12 +2409,12 @@ public class TestHiveIntegrationSmokeTest
             assertUpdate(
                     session,
                     "INSERT INTO insert_partitioned_sorted_table\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM insert_partitioned_sorted_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
         }
         finally {
             assertUpdate(session, "DROP TABLE IF EXISTS create_partitioned_sorted_table");
@@ -2440,23 +2441,23 @@ public class TestHiveIntegrationSmokeTest
                     session,
                     "CREATE TABLE create_partitioned_ordering_table (orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus)\n" +
                             "WITH (partitioned_by = ARRAY['orderstatus'], preferred_ordering_columns = ARRAY['orderkey']) AS\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM create_partitioned_ordering_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
 
             assertUpdate(
                     session,
                     "CREATE TABLE create_unpartitioned_ordering_table (orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus)\n" +
                             "WITH (preferred_ordering_columns = ARRAY['orderkey']) AS\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM create_unpartitioned_ordering_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
 
             // insert
             assertUpdate(
@@ -2467,12 +2468,12 @@ public class TestHiveIntegrationSmokeTest
             assertUpdate(
                     session,
                     "INSERT INTO insert_partitioned_ordering_table\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
+                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.tiny.orders",
+                    (long) computeActual("SELECT count(*) FROM tpch.tiny.orders").getOnlyValue());
             assertQuery(
                     session,
                     "SELECT count(*) FROM insert_partitioned_ordering_table",
-                    "SELECT count(*) * 100 FROM orders");
+                    "SELECT count(*) FROM orders");
 
             // invalid
             assertQueryFails(
@@ -2630,96 +2631,6 @@ public class TestHiveIntegrationSmokeTest
     }
 
     @Test
-    public void testFileRenamingForPartitionedTable()
-    {
-        try {
-            // Create partitioned table
-            assertUpdate(
-                    Session.builder(getSession())
-                            .setCatalogSessionProperty(catalog, FILE_RENAMING_ENABLED, "true")
-                            .setSystemProperty("scale_writers", "false")
-                            .setSystemProperty("writer_min_size", "1MB")
-                            .setSystemProperty("task_writer_count", "1")
-                            .build(),
-                    "CREATE TABLE partitioned_ordering_table (orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus)\n" +
-                            "WITH (partitioned_by = ARRAY['orderstatus'], preferred_ordering_columns = ARRAY['orderkey']) AS\n" +
-                            "SELECT orderkey, custkey, totalprice, orderdate, orderpriority, clerk, shippriority, comment, orderstatus FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
-
-            // Collect all file names
-            Map<String, List<Integer>> partitionFileNamesMap = new HashMap<>();
-            MaterializedResult partitionedResults = computeActual("SELECT DISTINCT \"$path\" FROM partitioned_ordering_table");
-            for (int i = 0; i < partitionedResults.getRowCount(); i++) {
-                MaterializedRow row = partitionedResults.getMaterializedRows().get(i);
-                Path pathName = new Path((String) row.getField(0));
-                String partitionName = pathName.getParent().toString();
-                String fileName = pathName.getName();
-                partitionFileNamesMap.putIfAbsent(partitionName, new ArrayList<>());
-                partitionFileNamesMap.get(partitionName).add(Integer.valueOf(fileName));
-            }
-
-            // Assert that file names are a continuous increasing sequence for all partitions
-            for (String partitionName : partitionFileNamesMap.keySet()) {
-                List<Integer> partitionedTableFileNames = partitionFileNamesMap.get(partitionName);
-                assertTrue(partitionedTableFileNames.size() > 0);
-                assertTrue(isIncreasingSequence(partitionedTableFileNames));
-            }
-        }
-        finally {
-            assertUpdate("DROP TABLE IF EXISTS partitioned_ordering_table");
-        }
-    }
-
-    @Test
-    public void testFileRenamingForUnpartitionedTable()
-    {
-        try {
-            // Create un-partitioned table
-            assertUpdate(
-                    Session.builder(getSession())
-                            .setCatalogSessionProperty(catalog, FILE_RENAMING_ENABLED, "true")
-                            .setSystemProperty("scale_writers", "false")
-                            .setSystemProperty("writer_min_size", "1MB")
-                            .setSystemProperty("task_writer_count", "1")
-                            .build(),
-                    "CREATE TABLE unpartitioned_ordering_table AS SELECT * FROM tpch.sf1.orders",
-                    (long) computeActual("SELECT count(*) FROM tpch.sf1.orders").getOnlyValue());
-
-            // Collect file names of the table
-            List<Integer> fileNames = new ArrayList<>();
-            MaterializedResult results = computeActual("SELECT DISTINCT \"$path\" FROM unpartitioned_ordering_table");
-            for (int i = 0; i < results.getRowCount(); i++) {
-                MaterializedRow row = results.getMaterializedRows().get(i);
-                String pathName = (String) row.getField(0);
-                String fileName = new Path(pathName).getName();
-                fileNames.add(Integer.valueOf(fileName));
-            }
-
-            assertTrue(fileNames.size() > 0);
-
-            // Assert that file names are continuous increasing sequence
-            assertTrue(isIncreasingSequence(fileNames));
-        }
-        finally {
-            assertUpdate("DROP TABLE IF EXISTS unpartitioned_ordering_table");
-        }
-    }
-
-    boolean isIncreasingSequence(List<Integer> fileNames)
-    {
-        Collections.sort(fileNames);
-
-        int i = 0;
-        for (int fileName : fileNames) {
-            if (i != fileName) {
-                return false;
-            }
-            i++;
-        }
-        return true;
-    }
-
-    @Test
     public void testShowCreateTable()
     {
         String createTableFormat = "CREATE TABLE %s.%s.%s (\n" +
@@ -2779,6 +2690,25 @@ public class TestHiveIntegrationSmokeTest
         assertUpdate(createTableSql);
         actualResult = computeActual("SHOW CREATE TABLE \"test_show_create_table'2\"");
         assertEquals(getOnlyElement(actualResult.getOnlyColumnAsSet()), createTableSql);
+    }
+
+    @Test
+    public void testShowCreateSchema()
+    {
+        String createSchemaSql = "CREATE SCHEMA show_create_hive_schema";
+        assertUpdate(createSchemaSql);
+        String expectedShowCreateSchema = "CREATE SCHEMA show_create_hive_schema\n" +
+                "WITH (\n" +
+                "   location = '.*show_create_hive_schema'\n" +
+                ")";
+
+        MaterializedResult actualResult = computeActual("SHOW CREATE SCHEMA show_create_hive_schema");
+        assertThat(getOnlyElement(actualResult.getOnlyColumnAsSet()).toString().matches(expectedShowCreateSchema));
+
+        assertQueryFails(format("SHOW CREATE SCHEMA %s.%s", getSession().getCatalog().get(), ""), ".*mismatched input '.'. Expecting: <EOF>");
+        assertQueryFails(format("SHOW CREATE SCHEMA %s.%s.%s", getSession().getCatalog().get(), "show_create_hive_schema", "tabletest"), ".*Too many parts in schema name: hive.show_create_hive_schema.tabletest");
+        assertQueryFails(format("SHOW CREATE SCHEMA %s", "schema_not_exist"), ".*Schema 'hive.schema_not_exist' does not exist");
+        assertUpdate("DROP SCHEMA show_create_hive_schema");
     }
 
     @Test
@@ -4421,6 +4351,48 @@ public class TestHiveIntegrationSmokeTest
         assertQueryFails(
                 "CREATE TABLE invalid_partition_value (a, b) WITH (partitioned_by = ARRAY['b']) AS SELECT 4, chr(9731)",
                 "\\QHive partition keys can only contain printable ASCII characters (0x20 - 0x7E). Invalid value: E2 98 83\\E");
+    }
+
+    @Test
+    public void testShowColumnMetadata()
+    {
+        String tableName = "test_show_column_table";
+
+        @Language("SQL") String createTable = "CREATE TABLE " + tableName + " (a bigint, b varchar, c double)";
+
+        Session testSession = testSessionBuilder()
+                .setIdentity(new Identity("test_access_owner", Optional.empty()))
+                .setCatalog(getSession().getCatalog().get())
+                .setSchema(getSession().getSchema().get())
+                .build();
+
+        assertUpdate(createTable);
+
+        // verify showing columns over a table requires SELECT privileges for the table
+        assertAccessAllowed("SHOW COLUMNS FROM " + tableName);
+        assertAccessDenied(testSession,
+                "SHOW COLUMNS FROM " + tableName,
+                "Cannot show columns of table .*." + tableName + ".*",
+                privilege(tableName, SELECT_COLUMN));
+
+        @Language("SQL") String getColumnsSql = "" +
+                "SELECT lower(column_name) " +
+                "FROM information_schema.columns " +
+                "WHERE table_name = '" + tableName + "'";
+        assertEquals(computeActual(getColumnsSql).getOnlyColumnAsSet(), ImmutableSet.of("a", "b", "c"));
+
+        // verify with no SELECT privileges on table, querying information_schema will return empty columns
+        executeExclusively(() -> {
+            try {
+                getQueryRunner().getAccessControl().deny(privilege(tableName, SELECT_COLUMN));
+                assertQueryReturnsEmptyResult(testSession, getColumnsSql);
+            }
+            finally {
+                getQueryRunner().getAccessControl().reset();
+            }
+        });
+
+        assertUpdate("DROP TABLE " + tableName);
     }
 
     @Test
@@ -6911,7 +6883,7 @@ public class TestHiveIntegrationSmokeTest
             assertEquals(partitionByProperty, partitionKeys);
             for (ColumnMetadata columnMetadata : tableMetadata.getColumns()) {
                 boolean partitionKey = partitionKeys.contains(columnMetadata.getName());
-                assertEquals(columnMetadata.getExtraInfo(), columnExtraInfo(partitionKey));
+                assertEquals(columnMetadata.getExtraInfo().orElse(null), columnExtraInfo(partitionKey));
             }
         }
         else {

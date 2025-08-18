@@ -14,7 +14,8 @@
 package com.facebook.presto.spark.execution.property;
 
 import com.facebook.airlift.configuration.testing.ConfigAssertions;
-import io.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize;
+import com.facebook.airlift.units.DataSize.Unit;
 import org.testng.annotations.Test;
 
 import java.io.File;
@@ -38,21 +39,11 @@ public class TestNativeExecutionSystemConfig
     {
         // Test defaults
         assertRecordedDefaults(ConfigAssertions.recordDefaults(NativeExecutionVeloxConfig.class)
-                .setCodegenEnabled(false)
-                .setSpillEnabled(true)
-                .setAggregationSpillEnabled(true)
-                .setJoinSpillEnabled(true)
-                .setOrderBySpillEnabled(true)
-                .setMaxSpillBytes(500L << 30));
+                .setCodegenEnabled(false));
 
         // Test explicit property mapping. Also makes sure properties returned by getAllProperties() covers full property list.
         NativeExecutionVeloxConfig expected = new NativeExecutionVeloxConfig()
-                .setCodegenEnabled(true)
-                .setSpillEnabled(false)
-                .setAggregationSpillEnabled(false)
-                .setJoinSpillEnabled(false)
-                .setOrderBySpillEnabled(false)
-                .setMaxSpillBytes(1L);
+                .setCodegenEnabled(true);
         Map<String, String> properties = expected.getAllProperties();
         assertFullMapping(properties, expected);
     }
@@ -84,7 +75,7 @@ public class TestNativeExecutionSystemConfig
                 .setUseMmapAllocator(true)
                 .setMemoryArbitratorKind("SHARED")
                 .setMemoryArbitratorCapacityGb(8)
-                .setMemoryArbitratorReservedCapacityGb(0)
+                .setSharedArbitratorReservedCapacity(new DataSize(0, Unit.GIGABYTE))
                 .setMemoryPoolInitCapacity(8L << 30)
                 .setMemoryPoolReservedCapacity(0)
                 .setMemoryPoolTransferCapacity(2L << 30)
@@ -97,7 +88,12 @@ public class TestNativeExecutionSystemConfig
                 .setShuffleName("local")
                 .setRegisterTestFunctions(false)
                 .setEnableHttpServerAccessLog(true)
-                .setCoreOnAllocationFailureEnabled(false));
+                .setCoreOnAllocationFailureEnabled(false)
+                .setSpillEnabled(true)
+                .setAggregationSpillEnabled(true)
+                .setJoinSpillEnabled(true)
+                .setOrderBySpillEnabled(true)
+                .setMaxSpillBytes(600L << 30));
 
         // Test explicit property mapping. Also makes sure properties returned by getAllProperties() covers full property list.
         NativeExecutionSystemConfig expected = new NativeExecutionSystemConfig()
@@ -121,11 +117,11 @@ public class TestNativeExecutionSystemConfig
                 .setPrestoVersion("presto-version")
                 .setShutdownOnsetSec(30)
                 .setSystemMemoryGb(40)
-                .setQueryMemoryGb(new DataSize(20, DataSize.Unit.GIGABYTE))
+                .setQueryMemoryGb(new DataSize(20, Unit.GIGABYTE))
                 .setUseMmapAllocator(false)
                 .setMemoryArbitratorKind("")
                 .setMemoryArbitratorCapacityGb(10)
-                .setMemoryArbitratorReservedCapacityGb(8)
+                .setSharedArbitratorReservedCapacity(new DataSize(8, Unit.GIGABYTE))
                 .setMemoryPoolInitCapacity(7L << 30)
                 .setMemoryPoolReservedCapacity(6L << 30)
                 .setMemoryPoolTransferCapacity(1L << 30)
@@ -136,7 +132,12 @@ public class TestNativeExecutionSystemConfig
                 .setShuffleName("custom")
                 .setRegisterTestFunctions(true)
                 .setEnableHttpServerAccessLog(false)
-                .setCoreOnAllocationFailureEnabled(true);
+                .setCoreOnAllocationFailureEnabled(true)
+                .setSpillEnabled(false)
+                .setAggregationSpillEnabled(false)
+                .setJoinSpillEnabled(false)
+                .setOrderBySpillEnabled(false)
+                .setMaxSpillBytes(1L);
         Map<String, String> properties = expected.getAllProperties();
         assertFullMapping(properties, expected);
     }

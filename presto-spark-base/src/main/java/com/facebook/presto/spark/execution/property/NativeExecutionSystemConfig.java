@@ -14,8 +14,8 @@
 package com.facebook.presto.spark.execution.property;
 
 import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.units.DataSize;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.units.DataSize;
 
 import java.util.Map;
 
@@ -81,7 +81,7 @@ public class NativeExecutionSystemConfig
     private static final String MEMORY_ARBITRATOR_CAPACITY_GB = "query-memory-gb";
     // Set memory arbitrator reserved capacity. Since there is only one query
     // running at Presto-on-Spark at a time, then we shall set this to zero.
-    private static final String MEMORY_ARBITRATOR_RESERVED_CAPACITY_GB = "query-reserved-memory-gb";
+    private static final String SHARED_ARBITRATOR_RESERVED_CAPACITY = "shared-arbitrator.reserved-capacity";
     // Set the initial memory capacity when we create a query memory pool. For
     // Presto-on-Spark, we set it to 'query-memory-gb' to allocate all the
     // memory arbitrator capacity to the query memory pool on its creation as
@@ -111,6 +111,13 @@ public class NativeExecutionSystemConfig
     private static final String HTTP_SERVER_ACCESS_LOGS = "http-server.enable-access-log";
     // Terminates the native process and generates a core file on an allocation failure
     private static final String CORE_ON_ALLOCATION_FAILURE_ENABLED = "core-on-allocation-failure-enabled";
+    // Spill related properties
+    private static final String SPILL_ENABLED = "spill-enabled";
+    private static final String AGGREGATION_SPILL_ENABLED = "aggregation-spill-enabled";
+    private static final String JOIN_SPILL_ENABLED = "join-spill-enabled";
+    private static final String ORDER_BY_SPILL_ENABLED = "order-by-spill-enabled";
+    private static final String MAX_SPILL_BYTES = "max-spill-bytes";
+
     private boolean enableSerializedPageChecksum = true;
     private boolean enableVeloxExpressionLogging;
     private boolean enableVeloxTaskLogging = true;
@@ -137,7 +144,7 @@ public class NativeExecutionSystemConfig
     private boolean useMmapAllocator = true;
     private String memoryArbitratorKind = "SHARED";
     private int memoryArbitratorCapacityGb = 8;
-    private int memoryArbitratorReservedCapacityGb;
+    private DataSize sharedArbitratorReservedCapacity = new DataSize(0, DataSize.Unit.GIGABYTE);
     private long memoryPoolInitCapacity = 8L << 30;
     private long memoryPoolReservedCapacity;
     private long memoryPoolTransferCapacity = 2L << 30;
@@ -151,6 +158,11 @@ public class NativeExecutionSystemConfig
     private boolean registerTestFunctions;
     private boolean enableHttpServerAccessLog = true;
     private boolean coreOnAllocationFailureEnabled;
+    private boolean spillEnabled = true;
+    private boolean aggregationSpillEnabled = true;
+    private boolean joinSpillEnabled = true;
+    private boolean orderBySpillEnabled = true;
+    private Long maxSpillBytes = 600L << 30;
 
     public Map<String, String> getAllProperties()
     {
@@ -180,7 +192,7 @@ public class NativeExecutionSystemConfig
                 .put(USE_MMAP_ALLOCATOR, String.valueOf(getUseMmapAllocator()))
                 .put(MEMORY_ARBITRATOR_KIND, String.valueOf(getMemoryArbitratorKind()))
                 .put(MEMORY_ARBITRATOR_CAPACITY_GB, String.valueOf(getMemoryArbitratorCapacityGb()))
-                .put(MEMORY_ARBITRATOR_RESERVED_CAPACITY_GB, String.valueOf(getMemoryArbitratorReservedCapacityGb()))
+                .put(SHARED_ARBITRATOR_RESERVED_CAPACITY, String.valueOf(getSharedArbitratorReservedCapacity()))
                 .put(MEMORY_POOL_INIT_CAPACITY, String.valueOf(getMemoryPoolInitCapacity()))
                 .put(MEMORY_POOL_RESERVED_CAPACITY, String.valueOf(getMemoryPoolReservedCapacity()))
                 .put(MEMORY_POOL_TRANSFER_CAPACITY, String.valueOf(getMemoryPoolTransferCapacity()))
@@ -191,6 +203,11 @@ public class NativeExecutionSystemConfig
                 .put(SHUFFLE_NAME, getShuffleName())
                 .put(HTTP_SERVER_ACCESS_LOGS, String.valueOf(isEnableHttpServerAccessLog()))
                 .put(CORE_ON_ALLOCATION_FAILURE_ENABLED, String.valueOf(isCoreOnAllocationFailureEnabled()))
+                .put(SPILL_ENABLED, String.valueOf(getSpillEnabled()))
+                .put(AGGREGATION_SPILL_ENABLED, String.valueOf(getAggregationSpillEnabled()))
+                .put(JOIN_SPILL_ENABLED, String.valueOf(getJoinSpillEnabled()))
+                .put(ORDER_BY_SPILL_ENABLED, String.valueOf(getOrderBySpillEnabled()))
+                .put(MAX_SPILL_BYTES, String.valueOf(getMaxSpillBytes()))
                 .build();
     }
 
@@ -482,16 +499,16 @@ public class NativeExecutionSystemConfig
         return memoryArbitratorCapacityGb;
     }
 
-    @Config(MEMORY_ARBITRATOR_RESERVED_CAPACITY_GB)
-    public NativeExecutionSystemConfig setMemoryArbitratorReservedCapacityGb(int memoryArbitratorReservedCapacityGb)
+    @Config(SHARED_ARBITRATOR_RESERVED_CAPACITY)
+    public NativeExecutionSystemConfig setSharedArbitratorReservedCapacity(DataSize sharedArbitratorReservedCapacity)
     {
-        this.memoryArbitratorReservedCapacityGb = memoryArbitratorReservedCapacityGb;
+        this.sharedArbitratorReservedCapacity = sharedArbitratorReservedCapacity;
         return this;
     }
 
-    public int getMemoryArbitratorReservedCapacityGb()
+    public DataSize getSharedArbitratorReservedCapacity()
     {
-        return memoryArbitratorReservedCapacityGb;
+        return sharedArbitratorReservedCapacity;
     }
 
     @Config(MEMORY_POOL_INIT_CAPACITY)
@@ -623,6 +640,66 @@ public class NativeExecutionSystemConfig
     public NativeExecutionSystemConfig setCoreOnAllocationFailureEnabled(boolean coreOnAllocationFailureEnabled)
     {
         this.coreOnAllocationFailureEnabled = coreOnAllocationFailureEnabled;
+        return this;
+    }
+
+    public boolean getSpillEnabled()
+    {
+        return spillEnabled;
+    }
+
+    @Config(SPILL_ENABLED)
+    public NativeExecutionSystemConfig setSpillEnabled(boolean spillEnabled)
+    {
+        this.spillEnabled = spillEnabled;
+        return this;
+    }
+
+    public boolean getAggregationSpillEnabled()
+    {
+        return aggregationSpillEnabled;
+    }
+
+    @Config(AGGREGATION_SPILL_ENABLED)
+    public NativeExecutionSystemConfig setAggregationSpillEnabled(boolean aggregationSpillEnabled)
+    {
+        this.aggregationSpillEnabled = aggregationSpillEnabled;
+        return this;
+    }
+
+    public boolean getJoinSpillEnabled()
+    {
+        return joinSpillEnabled;
+    }
+
+    @Config(JOIN_SPILL_ENABLED)
+    public NativeExecutionSystemConfig setJoinSpillEnabled(boolean joinSpillEnabled)
+    {
+        this.joinSpillEnabled = joinSpillEnabled;
+        return this;
+    }
+
+    public boolean getOrderBySpillEnabled()
+    {
+        return orderBySpillEnabled;
+    }
+
+    @Config(ORDER_BY_SPILL_ENABLED)
+    public NativeExecutionSystemConfig setOrderBySpillEnabled(boolean orderBySpillEnabled)
+    {
+        this.orderBySpillEnabled = orderBySpillEnabled;
+        return this;
+    }
+
+    public Long getMaxSpillBytes()
+    {
+        return maxSpillBytes;
+    }
+
+    @Config(MAX_SPILL_BYTES)
+    public NativeExecutionSystemConfig setMaxSpillBytes(Long maxSpillBytes)
+    {
+        this.maxSpillBytes = maxSpillBytes;
         return this;
     }
 }
