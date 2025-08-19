@@ -236,7 +236,7 @@
             <dependency>
                 <groupId>com.squareup.okio</groupId>
                 <artifactId>okio-jvm</artifactId>
-                <version>3.9.1</version>
+                <version>3.10.0</version>
             </dependency>
 
             <!-- pull up to the version used in okio-jvm to avoid conlict with okhttp-* -->
