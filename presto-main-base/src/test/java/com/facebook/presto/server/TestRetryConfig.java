@@ -11,8 +11,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.facebook.presto.functionNamespace.mysql;
+package com.facebook.presto.server;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
@@ -20,28 +21,34 @@ import java.util.Map;
 
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
-import static com.facebook.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 
-public class TestMySqlConnectionConfig
+public class TestRetryConfig
 {
     @Test
-    public void testDefault()
+    public void testDefaults()
     {
-        assertRecordedDefaults(recordDefaults(MySqlConnectionConfig.class)
-                .setDatabaseUrl(null)
-                .setJdbcDriverName("com.mysql.jdbc.Driver"));
+        assertRecordedDefaults(ConfigAssertions.recordDefaults(RetryConfig.class)
+                .setRetryEnabled(true)
+                .setRequireHttps(false)
+                .setAllowedRetryDomains(null)
+                .setCrossClusterRetryErrorCodes("REMOTE_TASK_ERROR"));
     }
 
     @Test
     public void testExplicitPropertyMappings()
     {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
-                .put("database-url", "localhost:1080")
-                .put("database-driver-name", "org.mariadb.jdbc.Driver")
+                .put("retry.enabled", "false")
+                .put("retry.allowed-domains", "*.foo.bar,*.baz.qux")
+                .put("retry.require-https", "true")
+                .put("retry.cross-cluster-error-codes", "QUERY_QUEUE_FULL")
                 .build();
-        MySqlConnectionConfig expected = new MySqlConnectionConfig()
-                .setDatabaseUrl("localhost:1080")
-                .setJdbcDriverName("org.mariadb.jdbc.Driver");
+
+        RetryConfig expected = new RetryConfig()
+                .setRetryEnabled(false)
+                .setRequireHttps(true)
+                .setAllowedRetryDomains("*.foo.bar,*.baz.qux")
+                .setCrossClusterRetryErrorCodes("QUERY_QUEUE_FULL");
 
         assertFullMapping(properties, expected);
     }
